@@ -1,0 +1,195 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SIKE HUB — Admin tạo key</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; font-family: 'Segoe UI', system-ui, sans-serif; }
+  body {
+    min-height: 100vh; display: flex; align-items: center; justify-content: center;
+    background: radial-gradient(1000px 500px at 50% -10%, #12233a 0%, #080a0f 55%), #080a0f;
+    color: #f2f5fc; padding: 20px;
+  }
+  .card {
+    width: 100%; max-width: 480px; background: #0d1017; border: 1px solid #28324a;
+    border-radius: 18px; padding: 32px 28px;
+    box-shadow: 0 20px 60px rgba(0,0,0,.6);
+  }
+  .logo {
+    width: 56px; height: 56px; margin: 0 auto 12px; border-radius: 50%;
+    background: rgba(160,130,255,.1); border: 1px solid rgba(160,130,255,.4);
+    display: flex; align-items: center; justify-content: center;
+    font-size: 26px; font-weight: 900; color: #b9a5ff;
+  }
+  h1 { font-size: 22px; letter-spacing: 2px; text-align: center; }
+  .sub { color: #50607a; font-size: 12px; margin: 6px 0 22px; letter-spacing: 1px; text-align: center; }
+  label { display: block; font-size: 12px; color: #949eb4; margin: 14px 0 6px; font-weight: 600; }
+  input {
+    width: 100%; padding: 12px 14px; border-radius: 10px; border: 1px solid #28324a;
+    background: #12162a; color: #f2f5fc; font-size: 14px; outline: none;
+  }
+  input:focus { border-color: #58c4ff; }
+  input::placeholder { color: #50607a; }
+  button {
+    width: 100%; padding: 13px; border: none; border-radius: 12px; cursor: pointer;
+    background: linear-gradient(135deg, #2a6fd6, #58c4ff); color: #fff;
+    font-size: 14px; font-weight: 800; letter-spacing: 1px; margin-top: 16px;
+  }
+  button:disabled { opacity: .5; cursor: wait; }
+  button.danger { background: linear-gradient(135deg, #7a2430, #ff6473); }
+  button.ghost { background: #1c2333; border: 1px solid #28324a; }
+  button.copy { background: linear-gradient(135deg, #1e6e52, #48eba8); }
+  hr { border: none; border-top: 1px solid #1c2333; margin: 22px 0 6px; }
+  .msg { margin-top: 12px; font-size: 13px; min-height: 18px; color: #949eb4; text-align: center; }
+  .msg.err { color: #ff6473; }
+  .msg.ok { color: #48eba8; }
+  .key {
+    background: #12162a; border: 1px dashed #48eba8; border-radius: 12px;
+    padding: 14px 10px; font-family: monospace; font-size: 17px; font-weight: 700;
+    color: #48eba8; letter-spacing: 1px; word-break: break-all; user-select: all;
+    text-align: center; margin-top: 12px;
+  }
+  .exp { margin-top: 10px; font-size: 13px; color: #949eb4; text-align: center; }
+  .exp span { color: #48eba8; font-weight: 700; }
+  table { width: 100%; margin-top: 12px; font-size: 12px; border-collapse: collapse; }
+  th, td { padding: 8px 6px; border-bottom: 1px solid #1c2333; text-align: left; word-break: break-all; }
+  th { color: #50607a; font-size: 11px; }
+  td.k { font-family: monospace; color: #78dcff; }
+  td.e { color: #48eba8; }
+  .warn { margin-top: 18px; font-size: 12px; color: #ffb86b; text-align: center; line-height: 1.5; }
+</style>
+</head>
+<body>
+<div class="card">
+  <div class="logo">S</div>
+  <h1>SIKE HUB</h1>
+  <p class="sub">ADMIN • TẠO KEY TAY</p>
+
+  <label>ADMIN KEY (mật khẩu admin của bạn)</label>
+  <input type="password" id="adm" placeholder="dán admin key...">
+
+  <label>KEY TỰ CHỌN (bỏ trống = tự tạo ngẫu nhiên)</label>
+  <input id="custom" placeholder="VD: SIKE-VIP-VINH">
+
+  <label>KHÓA THEO MÁY — HWID (bỏ trống = mọi máy dùng được)</label>
+  <input id="hwid" placeholder="VD: abc123... hoặc UID_123456">
+
+  <label>THỜI HẠN (giờ) — 0 = vĩnh viễn</label>
+  <input type="number" id="hours" value="48" min="0" max="87600">
+
+  <button id="create">TẠO KEY</button>
+  <p id="msg" class="msg"></p>
+
+  <div id="result" style="display:none">
+    <div class="key" id="key"></div>
+    <button class="copy" id="copy">📋 COPY KEY</button>
+    <p class="exp" id="exp"></p>
+  </div>
+
+  <hr>
+  <label>XÓA KEY (thu hồi key bị lộ)</label>
+  <input id="del" placeholder="SIKE-XXXX-...">
+  <button class="danger" id="revoke">XÓA KEY NÀY</button>
+  <p id="msg2" class="msg"></p>
+
+  <hr>
+  <button class="ghost" id="list">XEM DANH SÁCH KEY</button>
+  <div id="keys"></div>
+
+  <p class="warn">⚠️ Trang admin này chỉ mình bạn dùng — đừng chia sẻ link + admin key cho ai.</p>
+</div>
+
+<script>
+// Link server — sửa nếu đổi server
+const SERVER_URL = "https://getkeyhub.onrender.com";
+
+const $ = id => document.getElementById(id);
+const enc = encodeURIComponent;
+
+// nhớ admin key trên máy này cho tiện
+$("adm").value = localStorage.getItem("sike_adm") || "";
+function adm() {
+  const v = $("adm").value.trim();
+  localStorage.setItem("sike_adm", v);
+  return v;
+}
+
+$("create").onclick = async () => {
+  const btn = $("create"), msg = $("msg");
+  const a = adm();
+  if (!a) { msg.className = "msg err"; msg.textContent = "Nhập admin key trước đã."; return; }
+  btn.disabled = true; msg.className = "msg"; msg.textContent = "Đang tạo...";
+  $("result").style.display = "none";
+  const custom = $("custom").value.trim();
+  const hwid = $("hwid").value.trim() || "*";
+  const hours = $("hours").value || "48";
+  let url = `${SERVER_URL}/api/admin/create?admin=${enc(a)}&hours=${enc(hours)}&hwid=${enc(hwid)}`;
+  if (custom) url += `&key=${enc(custom)}`;
+  try {
+    const d = await (await fetch(url)).json();
+    if (d.status === "success") {
+      msg.className = "msg ok"; msg.textContent = "✔ Tạo key thành công!";
+      $("result").style.display = "block";
+      $("key").textContent = d.key;
+      $("exp").innerHTML = d.expiresAt
+        ? `Hết hạn: <span>${new Date(d.expiresAt).toLocaleString("vi-VN")}</span> • Máy: <span>${d.hwid === "*" ? "mọi máy" : d.hwid}</span>`
+        : `Thời hạn: <span>VĨNH VIỄN</span> • Máy: <span>${d.hwid === "*" ? "mọi máy" : d.hwid}</span>`;
+    } else {
+      msg.className = "msg err"; msg.textContent = "✘ " + (d.message || "Lỗi.");
+    }
+  } catch (e) {
+    msg.className = "msg err"; msg.textContent = "Không kết nối được server. Thử lại sau.";
+  }
+  btn.disabled = false;
+};
+
+$("copy").onclick = async () => {
+  const key = $("key").textContent.trim();
+  const btn = $("copy");
+  try { await navigator.clipboard.writeText(key); }
+  catch (e) {
+    const ta = document.createElement("textarea");
+    ta.value = key; document.body.appendChild(ta);
+    ta.select(); document.execCommand("copy"); ta.remove();
+  }
+  btn.textContent = "✔ ĐÃ COPY!";
+  setTimeout(() => btn.textContent = "📋 COPY KEY", 2000);
+};
+
+$("revoke").onclick = async () => {
+  const a = adm(), msg = $("msg2");
+  const key = $("del").value.trim();
+  if (!a) { msg.className = "msg err"; msg.textContent = "Nhập admin key trước đã."; return; }
+  if (!key) { msg.className = "msg err"; msg.textContent = "Nhập key cần xóa."; return; }
+  msg.className = "msg"; msg.textContent = "Đang xóa...";
+  try {
+    const d = await (await fetch(`${SERVER_URL}/api/admin/revoke?admin=${enc(a)}&key=${enc(key)}`)).json();
+    msg.className = d.status === "success" ? "msg ok" : "msg err";
+    msg.textContent = (d.status === "success" ? "✔ " : "✘ ") + (d.message || "");
+  } catch (e) {
+    msg.className = "msg err"; msg.textContent = "Không kết nối được server.";
+  }
+};
+
+$("list").onclick = async () => {
+  const a = adm(), box = $("keys");
+  if (!a) { box.innerHTML = "<p class='msg err'>Nhập admin key trước đã.</p>"; return; }
+  box.innerHTML = "<p class='msg'>Đang tải...</p>";
+  try {
+    const d = await (await fetch(`${SERVER_URL}/api/admin/list?admin=${enc(a)}`)).json();
+    if (d.status !== "success") { box.innerHTML = `<p class='msg err'>✘ ${d.message || "Lỗi."}</p>`; return; }
+    if (!d.keys.length) { box.innerHTML = "<p class='msg'>Chưa có key nào.</p>"; return; }
+    let h = "<table><tr><th>KEY</th><th>MÁY</th><th>CÒN LẠI</th></tr>";
+    for (const k of d.keys) {
+      const hw = k.hwid === "*" ? "mọi máy" : (k.hwid.length > 14 ? k.hwid.slice(0, 12) + "..." : k.hwid);
+      h += `<tr><td class='k'>${k.key}</td><td>${hw}</td><td class='e'>${k.left}</td></tr>`;
+    }
+    box.innerHTML = h + "</table>";
+  } catch (e) {
+    box.innerHTML = "<p class='msg err'>Không kết nối được server.</p>";
+  }
+};
+</script>
+</body>
+</html>
