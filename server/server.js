@@ -3,7 +3,7 @@
 //  Luong: Script -> /api/getlink -> user vuot link4m ->
 //         getkey.html -> /api/redeem (cap key 48h) ->
 //         Script -> /api/verify moi lan chay
-//  Admin: /api/admin/create|revoke|list (can ADMIN_KEY)
+//  Admin: /api/admin/create|revoke|reset|list (can ADMIN_KEY)
 //  Yeu cau: Node 18+
 //  Bien moi truong: LINK4M_API, SITE_URL, KEY_TTL_HOURS (48), ADMIN_KEY
 // ============================================================
@@ -177,12 +177,25 @@ app.get("/api/verify", (req, res) => {
   }
   const v = db.keys[key];
   if (!v) return res.json({ status: "success", valid: false, reason: "not_found" });
+  // key khoa cung theo 1 may (key vuot link)
   if (v.hwid !== "*" && v.hwid !== hwid) {
     return res.json({ status: "success", valid: false, reason: "wrong_hwid" });
   }
   if (v.expiresAt && v.expiresAt <= Date.now()) {
     delete db.keys[key]; saveDB();
     return res.json({ status: "success", valid: false, reason: "expired" });
+  }
+  // key nhieu may: dem may den truoc phuc vu truoc, du slot thi chan
+  if (v.hwid === "*") {
+    if (!Array.isArray(v.hwids)) v.hwids = [];
+    if (!v.hwids.includes(hwid)) {
+      const max = (v.maxDevices == null || v.maxDevices <= 0) ? Infinity : v.maxDevices;
+      if (v.hwids.length >= max) {
+        return res.json({ status: "success", valid: false, reason: "device_limit" });
+      }
+      v.hwids.push(hwid);
+      saveDB();
+    }
   }
   return res.json({ status: "success", valid: true, expiresAt: v.expiresAt });
 });
@@ -197,10 +210,11 @@ function needAdmin(req, res) {
   return true;
 }
 
-// Tao key tay: ?admin=SECRET&hours=168&hwid=*&key=SIKE-TU-CHON
+// Tao key tay: ?admin=SECRET&hours=168&hwid=*&max=3&key=SIKE-TU-CHON
 //   hours: so gio (0 = VINH VIEN, max 87600 = 10 nam), mac dinh 48
 //   hwid: khoa theo may, de trong/* = moi may dung duoc
-//   key: tu dat ten (maid dang SIKE-...), de trong = tu tao ngau nhien
+//   max: so may toi da (chi ap dung khi hwid=*; 0 = khong gioi han)
+//   key: tu dat ten (dang SIKE-...), de trong = tu tao ngau nhien
 app.get("/api/admin/create", (req, res) => {
   if (!needAdmin(req, res)) return;
   let hours = parseFloat((req.query.hours || "48").toString());
@@ -211,6 +225,10 @@ app.get("/api/admin/create", (req, res) => {
   if (hwid !== "*" && !validHwid(hwid)) {
     return res.json({ status: "error", message: "HWID khong hop le (de trong = moi may)." });
   }
+
+  let max = parseInt((req.query.max || "0").toString(), 10);
+  if (isNaN(max) || max < 0) max = 0;
+  max = Math.min(max, 1000); // 0 = khong gioi han
 
   let key = (req.query.key || "").toString().trim().toUpperCase();
   if (key) {
@@ -229,10 +247,12 @@ app.get("/api/admin/create", (req, res) => {
     hwid,
     createdAt: now,
     expiresAt: hours <= 0 ? 0 : now + hours * 3600 * 1000, // 0 = vinh vien
+    maxDevices: hwid === "*" ? max : 1,
+    hwids: [],
     note: "admin",
   };
   saveDB();
-  res.json({ status: "success", key, hwid, hours, expiresAt: db.keys[key].expiresAt });
+  res.json({ status: "success", key, hwid, hours, maxDevices: db.keys[key].maxDevices, expiresAt: db.keys[key].expiresAt });
 });
 
 // Xoa key: ?admin=SECRET&key=SIKE-XXXX
@@ -246,17 +266,35 @@ app.get("/api/admin/revoke", (req, res) => {
   res.json({ status: "success", message: "Da xoa key " + key });
 });
 
+// Reset danh sach may cua key (khi doi may / het slot): ?admin=SECRET&key=SIKE-XXXX
+app.get("/api/admin/reset", (req, res) => {
+  if (!needAdmin(req, res)) return;
+  const key = (req.query.key || "").toString().trim().toUpperCase();
+  const v = db.keys[key];
+  if (!key || !v) {
+    return res.json({ status: "error", message: "Key khong ton tai." });
+  }
+  v.hwids = []; saveDB();
+  res.json({ status: "success", message: "Da reset so may cua key " + key });
+});
+
 // Xem tat ca key: ?admin=SECRET
 app.get("/api/admin/list", (req, res) => {
   if (!needAdmin(req, res)) return;
   cleanup();
   const now = Date.now();
-  const out = Object.entries(db.keys).map(([key, v]) => ({
-    key,
-    hwid: v.hwid,
-    expiresAt: v.expiresAt,
-    left: !v.expiresAt ? "vinh vien" : Math.max(0, Math.round((v.expiresAt - now) / 3600000)) + "h",
-  }));
+  const out = Object.entries(db.keys).map(([key, v]) => {
+    const used = Array.isArray(v.hwids) ? v.hwids.length : (v.hwid === "*" ? 0 : 1);
+    const max = v.maxDevices == null ? 0 : v.maxDevices;
+    return {
+      key,
+      hwid: v.hwid,
+      devices: used,
+      max: v.hwid === "*" ? max : 1,
+      expiresAt: v.expiresAt,
+      left: !v.expiresAt ? "vinh vien" : Math.max(0, Math.round((v.expiresAt - now) / 3600000)) + "h",
+    };
+  });
   res.json({ status: "success", count: out.length, keys: out });
 });
 
