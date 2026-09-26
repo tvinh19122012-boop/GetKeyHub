@@ -3,8 +3,9 @@
 //  Luong: Script -> /api/getlink -> user vuot link4m ->
 //         getkey.html -> /api/redeem (cap key 48h) ->
 //         Script -> /api/verify moi lan chay
+//  Admin: /api/admin/create|revoke|list (can ADMIN_KEY)
 //  Yeu cau: Node 18+
-//  Bien moi truong: LINK4M_API, SITE_URL, KEY_TTL_HOURS (mac dinh 48)
+//  Bien moi truong: LINK4M_API, SITE_URL, KEY_TTL_HOURS (48), ADMIN_KEY
 // ============================================================
 
 const express = require("express");
@@ -21,6 +22,7 @@ const PORT = process.env.PORT || 3000;
 const LINK4M_API = (process.env.LINK4M_API || "").trim();
 const SITE_URL = (process.env.SITE_URL || "").trim().replace(/\/$/, ""); // vd: https://tenban.github.io/sikehub (KHONG co / cuoi)
 const KEY_TTL_HOURS = parseInt(process.env.KEY_TTL_HOURS || "48", 10);
+const ADMIN_KEY = (process.env.ADMIN_KEY || "").trim(); // key admin tu dat, vd: sike-admin-xxxx
 const TOKEN_TTL_MIN = 30; // link lay-key chi song 30 phut
 
 const DB_PATH = path.join(__dirname, "keys.json");
@@ -68,7 +70,8 @@ function cleanup() {
   const now = Date.now();
   let changed = false;
   for (const [k, v] of Object.entries(db.keys)) {
-    if (!v.expiresAt || v.expiresAt <= now) { delete db.keys[k]; changed = true; }
+    // expiresAt = 0 nghia la VINH VIEN -> khong xoa
+    if (v.expiresAt && v.expiresAt <= now) { delete db.keys[k]; changed = true; }
   }
   for (const [t, v] of Object.entries(db.pending)) {
     if (v.used || !v.createdAt || now - v.createdAt > TOKEN_TTL_MIN * 60 * 1000) {
@@ -174,16 +177,92 @@ app.get("/api/verify", (req, res) => {
   }
   const v = db.keys[key];
   if (!v) return res.json({ status: "success", valid: false, reason: "not_found" });
-  if (v.hwid !== hwid) return res.json({ status: "success", valid: false, reason: "wrong_hwid" });
-  if (v.expiresAt <= Date.now()) {
+  if (v.hwid !== "*" && v.hwid !== hwid) {
+    return res.json({ status: "success", valid: false, reason: "wrong_hwid" });
+  }
+  if (v.expiresAt && v.expiresAt <= Date.now()) {
     delete db.keys[key]; saveDB();
     return res.json({ status: "success", valid: false, reason: "expired" });
   }
   return res.json({ status: "success", valid: true, expiresAt: v.expiresAt });
 });
 
+// ---------- ADMIN (can ADMIN_KEY) ----------
+function needAdmin(req, res) {
+  const a = (req.query.admin || "").toString();
+  if (!ADMIN_KEY || a !== ADMIN_KEY) {
+    res.json({ status: "error", message: "Sai admin key." });
+    return false;
+  }
+  return true;
+}
+
+// Tao key tay: ?admin=SECRET&hours=168&hwid=*&key=SIKE-TU-CHON
+//   hours: so gio (0 = VINH VIEN, max 87600 = 10 nam), mac dinh 48
+//   hwid: khoa theo may, de trong/* = moi may dung duoc
+//   key: tu dat ten (maid dang SIKE-...), de trong = tu tao ngau nhien
+app.get("/api/admin/create", (req, res) => {
+  if (!needAdmin(req, res)) return;
+  let hours = parseFloat((req.query.hours || "48").toString());
+  if (isNaN(hours)) hours = 48;
+  hours = Math.max(0, Math.min(hours, 87600));
+
+  let hwid = (req.query.hwid || "*").toString().trim() || "*";
+  if (hwid !== "*" && !validHwid(hwid)) {
+    return res.json({ status: "error", message: "HWID khong hop le (de trong = moi may)." });
+  }
+
+  let key = (req.query.key || "").toString().trim().toUpperCase();
+  if (key) {
+    if (!/^SIKE-[A-Z0-9-]{1,32}$/.test(key)) {
+      return res.json({ status: "error", message: "Key tu chon phai dang SIKE-... (chu/so/gach-ngang)." });
+    }
+    if (db.keys[key]) {
+      return res.json({ status: "error", message: "Key da ton tai." });
+    }
+  } else {
+    key = genKey();
+  }
+
+  const now = Date.now();
+  db.keys[key] = {
+    hwid,
+    createdAt: now,
+    expiresAt: hours <= 0 ? 0 : now + hours * 3600 * 1000, // 0 = vinh vien
+    note: "admin",
+  };
+  saveDB();
+  res.json({ status: "success", key, hwid, hours, expiresAt: db.keys[key].expiresAt });
+});
+
+// Xoa key: ?admin=SECRET&key=SIKE-XXXX
+app.get("/api/admin/revoke", (req, res) => {
+  if (!needAdmin(req, res)) return;
+  const key = (req.query.key || "").toString().trim().toUpperCase();
+  if (!key || !db.keys[key]) {
+    return res.json({ status: "error", message: "Key khong ton tai." });
+  }
+  delete db.keys[key]; saveDB();
+  res.json({ status: "success", message: "Da xoa key " + key });
+});
+
+// Xem tat ca key: ?admin=SECRET
+app.get("/api/admin/list", (req, res) => {
+  if (!needAdmin(req, res)) return;
+  cleanup();
+  const now = Date.now();
+  const out = Object.entries(db.keys).map(([key, v]) => ({
+    key,
+    hwid: v.hwid,
+    expiresAt: v.expiresAt,
+    left: !v.expiresAt ? "vinh vien" : Math.max(0, Math.round((v.expiresAt - now) / 3600000)) + "h",
+  }));
+  res.json({ status: "success", count: out.length, keys: out });
+});
+
 app.listen(PORT, () => {
   console.log(`[SIKE HUB] Key server chay o port ${PORT} | key TTL ${KEY_TTL_HOURS}h`);
   if (!LINK4M_API) console.log("!! Chua co LINK4M_API (bien moi truong)");
   if (!SITE_URL) console.log("!! Chua co SITE_URL (bien moi truong)");
+  if (!ADMIN_KEY) console.log("!! Chua co ADMIN_KEY (bien moi truong) - API admin dang TAT");
 });
