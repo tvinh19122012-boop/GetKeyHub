@@ -69,6 +69,7 @@ local REASONS = {
     expired    = "Key đã hết hạn 48h.\nBấm GET KEY để lấy key mới.",
     wrong_hwid = "Key này thuộc về máy khác.",
     not_found  = "Key không đúng.\nKiểm tra lại key vừa copy.",
+    device_limit = "Key đã đủ số máy cho phép.\nLiên hệ admin để reset.",
     missing    = "Thiếu key.",
 }
 
@@ -139,7 +140,7 @@ if not passed then
     gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
     gui.Parent = parentGui
 
-    local W, H = 380, 470
+    local W, H = 380, 520
     local main = Instance.new("Frame")
     main.Size = UDim2.new(0, W, 0, H)
     main.Position = UDim2.new(0.5, -W / 2, 0.5, -H / 2)
@@ -267,6 +268,24 @@ if not passed then
     foot.TextYAlignment = Enum.TextYAlignment.Top; foot.TextWrapped = true
     foot.Parent = main
 
+    -- HWID cua may nay (de gui admin xin key rieng)
+    label("HWID CUA BAN (GUI ADMIN DE LAY KEY RIENG)", 455, 14, 10, T.faint)
+    local hwidBox = Instance.new("TextBox")
+    hwidBox.Size = UDim2.new(0, 240, 0, 36); hwidBox.Position = UDim2.new(0, 24, 0, 472)
+    hwidBox.BackgroundColor3 = T.bg1; hwidBox.BorderSizePixel = 0
+    hwidBox.Text = HWID; hwidBox.Font = Enum.Font.Code; hwidBox.TextSize = 11
+    hwidBox.TextColor3 = T.dim; hwidBox.TextTruncate = Enum.TextTruncate.AtEnd
+    hwidBox.ClearTextOnFocus = false
+    hwidBox.Parent = main
+    local hc = Instance.new("UICorner"); hc.CornerRadius = UDim.new(0, 10); hc.Parent = hwidBox
+    local copyHwidBtn = Instance.new("TextButton")
+    copyHwidBtn.Size = UDim2.new(0, 84, 0, 36); copyHwidBtn.Position = UDim2.new(0, 272, 0, 472)
+    copyHwidBtn.BackgroundColor3 = Color3.fromRGB(40, 88, 140); copyHwidBtn.BorderSizePixel = 0
+    copyHwidBtn.Text = "COPY"; copyHwidBtn.Font = Enum.Font.GothamBlack; copyHwidBtn.TextSize = 12
+    copyHwidBtn.TextColor3 = Color3.new(1, 1, 1); copyHwidBtn.AutoButtonColor = true
+    copyHwidBtn.Parent = main
+    local cc = Instance.new("UICorner"); cc.CornerRadius = UDim.new(0, 10); cc.Parent = copyHwidBtn
+
     -- ---------------- actions ----------------
     getBtn.MouseButton1Click:Connect(function()
         setStatus("Đang tạo link vượt...", T.dim)
@@ -289,6 +308,15 @@ if not passed then
             end
         else
             setStatus("✘ " .. tostring(data.message or "Lỗi tạo link."), T.danger)
+        end
+    end)
+
+    copyHwidBtn.MouseButton1Click:Connect(function()
+        if setclipboard then
+            pcall(setclipboard, HWID)
+            notify("SIKE HUB", "Đã copy HWID ✔ Gửi cho admin để lấy key.")
+        else
+            notify("SIKE HUB", "Máy bạn không hỗ trợ copy, giữ để chọn tay.")
         end
     end)
 
