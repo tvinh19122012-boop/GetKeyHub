@@ -38,6 +38,7 @@
   }
   button:disabled { opacity: .5; cursor: wait; }
   button.danger { background: linear-gradient(135deg, #7a2430, #ff6473); }
+  button.warn { background: linear-gradient(135deg, #7a5a24, #ffb86b); }
   button.ghost { background: #1c2333; border: 1px solid #28324a; }
   button.copy { background: linear-gradient(135deg, #1e6e52, #48eba8); }
   hr { border: none; border-top: 1px solid #1c2333; margin: 22px 0 6px; }
@@ -50,7 +51,7 @@
     color: #48eba8; letter-spacing: 1px; word-break: break-all; user-select: all;
     text-align: center; margin-top: 12px;
   }
-  .exp { margin-top: 10px; font-size: 13px; color: #949eb4; text-align: center; }
+  .exp { margin-top: 10px; font-size: 13px; color: #949eb4; text-align: center; line-height: 1.6; }
   .exp span { color: #48eba8; font-weight: 700; }
   table { width: 100%; margin-top: 12px; font-size: 12px; border-collapse: collapse; }
   th, td { padding: 8px 6px; border-bottom: 1px solid #1c2333; text-align: left; word-break: break-all; }
@@ -58,6 +59,7 @@
   td.k { font-family: monospace; color: #78dcff; }
   td.e { color: #48eba8; }
   .warn { margin-top: 18px; font-size: 12px; color: #ffb86b; text-align: center; line-height: 1.5; }
+  .hint { font-size: 11px; color: #50607a; margin-top: 4px; }
 </style>
 </head>
 <body>
@@ -72,8 +74,12 @@
   <label>KEY TỰ CHỌN (bỏ trống = tự tạo ngẫu nhiên)</label>
   <input id="custom" placeholder="VD: SIKE-VIP-VINH">
 
-  <label>KHÓA THEO MÁY — HWID (bỏ trống = mọi máy dùng được)</label>
+  <label>KHÓA THEO MÁY — HWID (bỏ trống = nhiều máy dùng được)</label>
   <input id="hwid" placeholder="VD: abc123... hoặc UID_123456">
+  <p class="hint">Điền HWID = chỉ đúng máy đó xài. Bỏ trống = chia theo số máy bên dưới.</p>
+
+  <label>SỐ MÁY TỐI ĐA (chỉ dùng khi bỏ trống HWID — 0 = không giới hạn)</label>
+  <input type="number" id="maxd" value="1" min="0" max="1000">
 
   <label>THỜI HẠN (giờ) — 0 = vĩnh viễn</label>
   <input type="number" id="hours" value="48" min="0" max="87600">
@@ -88,9 +94,10 @@
   </div>
 
   <hr>
-  <label>XÓA KEY (thu hồi key bị lộ)</label>
+  <label>XÓA / RESET KEY (dán key vào ô dưới)</label>
   <input id="del" placeholder="SIKE-XXXX-...">
   <button class="danger" id="revoke">XÓA KEY NÀY</button>
+  <button class="warn" id="reset">RESET SỐ MÁY (cho dùng lại từ đầu)</button>
   <p id="msg2" class="msg"></p>
 
   <hr>
@@ -124,7 +131,8 @@ $("create").onclick = async () => {
   const custom = $("custom").value.trim();
   const hwid = $("hwid").value.trim() || "*";
   const hours = $("hours").value || "48";
-  let url = `${SERVER_URL}/api/admin/create?admin=${enc(a)}&hours=${enc(hours)}&hwid=${enc(hwid)}`;
+  const maxd = $("maxd").value || "0";
+  let url = `${SERVER_URL}/api/admin/create?admin=${enc(a)}&hours=${enc(hours)}&hwid=${enc(hwid)}&max=${enc(maxd)}`;
   if (custom) url += `&key=${enc(custom)}`;
   try {
     const d = await (await fetch(url)).json();
@@ -132,9 +140,9 @@ $("create").onclick = async () => {
       msg.className = "msg ok"; msg.textContent = "✔ Tạo key thành công!";
       $("result").style.display = "block";
       $("key").textContent = d.key;
-      $("exp").innerHTML = d.expiresAt
-        ? `Hết hạn: <span>${new Date(d.expiresAt).toLocaleString("vi-VN")}</span> • Máy: <span>${d.hwid === "*" ? "mọi máy" : d.hwid}</span>`
-        : `Thời hạn: <span>VĨNH VIỄN</span> • Máy: <span>${d.hwid === "*" ? "mọi máy" : d.hwid}</span>`;
+      const han = d.expiresAt ? `Hết hạn: <span>${new Date(d.expiresAt).toLocaleString("vi-VN")}</span>` : `Thời hạn: <span>VĨNH VIỄN</span>`;
+      const may = d.hwid === "*" ? (d.maxDevices > 0 ? `tối đa <span>${d.maxDevices} máy</span>` : `<span>không giới hạn máy</span>`) : `khóa máy <span>${d.hwid}</span>`;
+      $("exp").innerHTML = `${han}<br>Máy: ${may}`;
     } else {
       msg.className = "msg err"; msg.textContent = "✘ " + (d.message || "Lỗi.");
     }
@@ -157,20 +165,22 @@ $("copy").onclick = async () => {
   setTimeout(() => btn.textContent = "📋 COPY KEY", 2000);
 };
 
-$("revoke").onclick = async () => {
+async function keyAction(path, okMsg) {
   const a = adm(), msg = $("msg2");
   const key = $("del").value.trim();
   if (!a) { msg.className = "msg err"; msg.textContent = "Nhập admin key trước đã."; return; }
-  if (!key) { msg.className = "msg err"; msg.textContent = "Nhập key cần xóa."; return; }
-  msg.className = "msg"; msg.textContent = "Đang xóa...";
+  if (!key) { msg.className = "msg err"; msg.textContent = "Nhập key vào ô trên đã."; return; }
+  msg.className = "msg"; msg.textContent = "Đang xử lý...";
   try {
-    const d = await (await fetch(`${SERVER_URL}/api/admin/revoke?admin=${enc(a)}&key=${enc(key)}`)).json();
+    const d = await (await fetch(`${SERVER_URL}/api/admin/${path}?admin=${enc(a)}&key=${enc(key)}`)).json();
     msg.className = d.status === "success" ? "msg ok" : "msg err";
-    msg.textContent = (d.status === "success" ? "✔ " : "✘ ") + (d.message || "");
+    msg.textContent = (d.status === "success" ? "✔ " : "✘ ") + (d.message || okMsg || "");
   } catch (e) {
     msg.className = "msg err"; msg.textContent = "Không kết nối được server.";
   }
-};
+}
+$("revoke").onclick = () => keyAction("revoke");
+$("reset").onclick = () => keyAction("reset");
 
 $("list").onclick = async () => {
   const a = adm(), box = $("keys");
@@ -182,8 +192,13 @@ $("list").onclick = async () => {
     if (!d.keys.length) { box.innerHTML = "<p class='msg'>Chưa có key nào.</p>"; return; }
     let h = "<table><tr><th>KEY</th><th>MÁY</th><th>CÒN LẠI</th></tr>";
     for (const k of d.keys) {
-      const hw = k.hwid === "*" ? "mọi máy" : (k.hwid.length > 14 ? k.hwid.slice(0, 12) + "..." : k.hwid);
-      h += `<tr><td class='k'>${k.key}</td><td>${hw}</td><td class='e'>${k.left}</td></tr>`;
+      let may;
+      if (k.hwid === "*") {
+        may = k.max > 0 ? `${k.devices}/${k.max} máy` : `${k.devices} máy (∞)`;
+      } else {
+        may = k.hwid.length > 14 ? k.hwid.slice(0, 12) + "..." : k.hwid;
+      }
+      h += `<tr><td class='k'>${k.key}</td><td>${may}</td><td class='e'>${k.left}</td></tr>`;
     }
     box.innerHTML = h + "</table>";
   } catch (e) {
