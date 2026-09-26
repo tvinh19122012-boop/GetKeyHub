@@ -299,8 +299,12 @@ if not passed then
             saveKey(keyBox.Text)
             local left = ""
             if type(info) == "number" then
-                local h = math.max(0, math.floor((info / 1000 - os.time()) / 3600))
-                left = " (còn ~" .. h .. "h)"
+                if info <= 0 then
+                    left = " (vĩnh viễn)"
+                else
+                    local h = math.max(0, math.floor((info / 1000 - os.time()) / 3600))
+                    left = " (còn ~" .. h .. "h)"
+                end
             end
             setStatus("✔ Key hợp lệ" .. left .. "! Đang mở script...", T.ok)
             notify("SIKE HUB", "Key hợp lệ ✔")
