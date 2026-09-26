@@ -3,7 +3,7 @@
 --//  Luồng: GET KEY -> vượt link -> NHẬN KEY -> dán key -> VERIFY
 --// ============================================================
 
-local SERVER_URL = "https://THAY-BANG-LINK-SERVER.onrender.com" -- << SỬA: link server của bạn (KHÔNG có / ở cuối)
+local SERVER_URL = "https://getkeyhub.onrender.com" -- << SỬA: link server của bạn (KHÔNG có / ở cuối)
 local SAVE_FILE  = "SIKE_key.txt" -- lưu key để tự đăng nhập khi key còn hạn
 
 local Players = game:GetService("Players")
