@@ -1,0 +1,323 @@
+--// ============================================================
+--//  SIKE HUB · KEY SYSTEM  (paste ở ĐẦU script, trước mọi code khác)
+--//  Luồng: GET KEY -> vượt link -> NHẬN KEY -> dán key -> VERIFY
+--// ============================================================
+
+local SERVER_URL = "https://THAY-BANG-LINK-SERVER.onrender.com" -- << SỬA: link server của bạn (KHÔNG có / ở cuối)
+local SAVE_FILE  = "SIKE_key.txt" -- lưu key để tự đăng nhập khi key còn hạn
+
+local Players = game:GetService("Players")
+local Http    = game:GetService("HttpService")
+local LP      = Players.LocalPlayer
+
+-- ---------------- helpers ----------------
+local function urlencode(s)
+    return (tostring(s):gsub("([^%w%-_%.~])", function(c)
+        return string.format("%%%02X", string.byte(c))
+    end))
+end
+
+local function notify(title, text, dur)
+    pcall(function()
+        game:GetService("StarterGui"):SetCore("SendNotification", {
+            Title = title, Text = text, Duration = dur or 5,
+        })
+    end)
+end
+
+local function httpGet(url)
+    local ok, body = pcall(function() return game:HttpGet(url) end)
+    if ok and body and body ~= "" then return body end
+    local req = request or http_request or (syn and syn.request)
+    if req then
+        local ok2, res = pcall(req, { Url = url, Method = "GET" })
+        if ok2 and res then
+            if type(res) == "table" and res.Body then return res.Body end
+            if type(res) == "string" and res ~= "" then return res end
+        end
+    end
+    return nil
+end
+
+local function getHWID()
+    local ok, r = pcall(function()
+        if gethwid then return gethwid() end
+        return nil
+    end)
+    if ok and r ~= nil then
+        if type(r) == "table" then r = r[1] or r[2] or "" end
+        r = tostring(r):gsub("%s+", "")
+        if #r >= 3 then return r end
+    end
+    return "UID_" .. tostring(LP and LP.UserId or 0)
+end
+local HWID = getHWID()
+
+local function api(path)
+    local body = httpGet(SERVER_URL .. path)
+    if not body then
+        return nil, "Không kết nối được server.\n(Server free có thể đang ngủ, chờ 30-60s rồi thử lại.)"
+    end
+    local ok2, data = pcall(function() return Http:JSONDecode(body) end)
+    if not ok2 or type(data) ~= "table" then
+        return nil, "Server trả về sai định dạng."
+    end
+    return data, nil
+end
+
+local REASONS = {
+    expired    = "Key đã hết hạn 48h.\nBấm GET KEY để lấy key mới.",
+    wrong_hwid = "Key này thuộc về máy khác.",
+    not_found  = "Key không đúng.\nKiểm tra lại key vừa copy.",
+    missing    = "Thiếu key.",
+}
+
+local function verifyKey(key)
+    key = tostring(key or ""):gsub("%s+", ""):upper()
+    if key == "" then return false, "Chưa nhập key." end
+    local data, err = api("/api/verify?key=" .. urlencode(key) .. "&hwid=" .. urlencode(HWID))
+    if not data then return false, err end
+    if data.status == "success" and data.valid == true then
+        return true, tonumber(data.expiresAt)
+    end
+    return false, REASONS[data.reason] or "Key không hợp lệ."
+end
+
+local function saveKey(key)
+    pcall(function()
+        if writefile then writefile(SAVE_FILE, tostring(key):gsub("%s+", "")) end
+    end)
+end
+
+local function clearSavedKey()
+    pcall(function()
+        if delfile and isfile and isfile(SAVE_FILE) then delfile(SAVE_FILE) end
+    end)
+end
+
+-- ---------------- tự đăng nhập nếu key cũ còn hạn ----------------
+local passed = false
+do
+    local saved = nil
+    pcall(function()
+        if isfile and isfile(SAVE_FILE) and readfile then
+            saved = tostring(readfile(SAVE_FILE) or ""):gsub("%s+", "")
+        end
+    end)
+    if saved and saved ~= "" then
+        local ok = verifyKey(saved)
+        if ok then
+            passed = true
+            notify("SIKE HUB", "Key còn hạn — tự động đăng nhập ✔")
+        else
+            clearSavedKey()
+        end
+    end
+end
+
+-- ---------------- UI nhập key (chỉ hiện khi chưa pass) ----------------
+if not passed then
+    local parentGui = (gethui and gethui()) or game:GetService("CoreGui")
+    pcall(function()
+        local old = parentGui:FindFirstChild("SikeHubKeySystem")
+        if old then old:Destroy() end
+    end)
+
+    local T = {
+        bg0 = Color3.fromRGB(8, 10, 15), bg1 = Color3.fromRGB(13, 16, 23),
+        bg2 = Color3.fromRGB(18, 22, 32), bg3 = Color3.fromRGB(24, 29, 42),
+        text = Color3.fromRGB(242, 245, 252), dim = Color3.fromRGB(148, 158, 180),
+        faint = Color3.fromRGB(80, 90, 112), accent = Color3.fromRGB(88, 196, 255),
+        hot = Color3.fromRGB(120, 220, 255), ok = Color3.fromRGB(72, 235, 168),
+        danger = Color3.fromRGB(255, 100, 115),
+    }
+
+    local gui = Instance.new("ScreenGui")
+    gui.Name = "SikeHubKeySystem"
+    gui.ResetOnSpawn = false
+    gui.IgnoreGuiInset = true
+    gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+    gui.Parent = parentGui
+
+    local W, H = 380, 470
+    local main = Instance.new("Frame")
+    main.Size = UDim2.new(0, W, 0, H)
+    main.Position = UDim2.new(0.5, -W / 2, 0.5, -H / 2)
+    main.BackgroundColor3 = T.bg0
+    main.BorderSizePixel = 0
+    main.Active = true
+    main.Draggable = true
+    main.Parent = gui
+
+    local mc = Instance.new("UICorner"); mc.CornerRadius = UDim.new(0, 16); mc.Parent = main
+    local ms = Instance.new("UIStroke"); ms.Color = T.accent; ms.Thickness = 1; ms.Transparency = 0.6; ms.Parent = main
+
+    local function label(txt, y, h, size, color, parent)
+        local l = Instance.new("TextLabel")
+        l.Size = UDim2.new(1, -48, 0, h)
+        l.Position = UDim2.new(0, 24, 0, y)
+        l.BackgroundTransparency = 1
+        l.Text = txt
+        l.Font = Enum.Font.GothamBold
+        l.TextSize = size
+        l.TextColor3 = color
+        l.TextXAlignment = Enum.TextXAlignment.Left
+        l.TextWrapped = true
+        l.Parent = parent or main
+        return l
+    end
+
+    -- logo + title
+    local logo = Instance.new("Frame")
+    logo.Size = UDim2.new(0, 46, 0, 46)
+    logo.Position = UDim2.new(0, 24, 0, 20)
+    logo.BackgroundColor3 = T.bg3
+    logo.BorderSizePixel = 0
+    logo.Parent = main
+    local lc = Instance.new("UICorner"); lc.CornerRadius = UDim.new(1, 0); lc.Parent = logo
+    local lt = Instance.new("TextLabel")
+    lt.Size = UDim2.new(1, 0, 1, 0); lt.BackgroundTransparency = 1
+    lt.Text = "S"; lt.Font = Enum.Font.GothamBlack; lt.TextSize = 24
+    lt.TextColor3 = T.hot; lt.Parent = logo
+
+    local title = Instance.new("TextLabel")
+    title.Size = UDim2.new(0, 280, 0, 24); title.Position = UDim2.new(0, 82, 0, 22)
+    title.BackgroundTransparency = 1; title.Text = "SIKE HUB"
+    title.Font = Enum.Font.GothamBlack; title.TextSize = 19
+    title.TextColor3 = T.text; title.TextXAlignment = Enum.TextXAlignment.Left
+    title.Parent = main
+
+    local sub = Instance.new("TextLabel")
+    sub.Size = UDim2.new(0, 280, 0, 16); sub.Position = UDim2.new(0, 82, 0, 48)
+    sub.BackgroundTransparency = 1; sub.Text = "KEY SYSTEM · MỖI MÁY 1 KEY · 48H"
+    sub.Font = Enum.Font.Gotham; sub.TextSize = 10
+    sub.TextColor3 = T.faint; sub.TextXAlignment = Enum.TextXAlignment.Left
+    sub.Parent = main
+
+    -- status
+    local status = Instance.new("TextLabel")
+    status.Size = UDim2.new(1, -48, 0, 40); status.Position = UDim2.new(0, 24, 0, 78)
+    status.BackgroundTransparency = 1; status.Text = "Nhập key để sử dụng script."
+    status.Font = Enum.Font.Gotham; status.TextSize = 12
+    status.TextColor3 = T.dim; status.TextXAlignment = Enum.TextXAlignment.Left
+    status.TextYAlignment = Enum.TextYAlignment.Top; status.TextWrapped = true
+    status.Parent = main
+
+    local function setStatus(txt, color)
+        status.Text = txt
+        status.TextColor3 = color or T.dim
+    end
+
+    -- key input
+    label("YOUR KEY", 122, 14, 10, T.faint)
+    local keyBox = Instance.new("TextBox")
+    keyBox.Size = UDim2.new(1, -48, 0, 42); keyBox.Position = UDim2.new(0, 24, 0, 140)
+    keyBox.BackgroundColor3 = T.bg2; keyBox.BorderSizePixel = 0
+    keyBox.PlaceholderText = "SIKE-XXXX-XXXX-XXXX"
+    keyBox.PlaceholderColor3 = T.faint
+    keyBox.Text = ""; keyBox.Font = Enum.Font.Code; keyBox.TextSize = 14
+    keyBox.TextColor3 = T.hot; keyBox.ClearTextOnFocus = false
+    keyBox.Parent = main
+    local kc = Instance.new("UICorner"); kc.CornerRadius = UDim.new(0, 10); kc.Parent = keyBox
+    local ks = Instance.new("UIStroke"); ks.Color = T.accent; ks.Thickness = 1; ks.Transparency = 0.6; ks.Parent = keyBox
+
+    local function button(txt, y, color1, color2)
+        local b = Instance.new("TextButton")
+        b.Size = UDim2.new(1, -48, 0, 44); b.Position = UDim2.new(0, 24, 0, y)
+        b.BackgroundColor3 = color1; b.BorderSizePixel = 0
+        b.Text = txt; b.Font = Enum.Font.GothamBlack; b.TextSize = 14
+        b.TextColor3 = Color3.new(1, 1, 1); b.AutoButtonColor = true
+        b.Parent = main
+        local c = Instance.new("UICorner"); c.CornerRadius = UDim.new(0, 11); c.Parent = b
+        return b
+    end
+
+    local verifyBtn = button("✔  VERIFY KEY", 192, Color3.fromRGB(30, 110, 82))
+
+    -- divider
+    local div = Instance.new("TextLabel")
+    div.Size = UDim2.new(1, -48, 0, 16); div.Position = UDim2.new(0, 24, 0, 244)
+    div.BackgroundTransparency = 1; div.Text = "— CHƯA CÓ KEY? —"
+    div.Font = Enum.Font.GothamBold; div.TextSize = 10
+    div.TextColor3 = T.faint; div.Parent = main
+
+    local getBtn = button("📋  GET KEY (COPY LINK)", 266, Color3.fromRGB(40, 88, 140))
+
+    -- link box (hiện link để copy tay nếu cần)
+    local linkBox = Instance.new("TextBox")
+    linkBox.Size = UDim2.new(1, -48, 0, 66); linkBox.Position = UDim2.new(0, 24, 0, 318)
+    linkBox.BackgroundColor3 = T.bg1; linkBox.BorderSizePixel = 0
+    linkBox.Text = "Bấm GET KEY để lấy link vượt..."; linkBox.Font = Enum.Font.Code; linkBox.TextSize = 11
+    linkBox.TextColor3 = T.dim; linkBox.TextWrapped = true
+    linkBox.TextXAlignment = Enum.TextXAlignment.Left; linkBox.TextYAlignment = Enum.TextYAlignment.Top
+    linkBox.ClearTextOnFocus = false; linkBox.TextEditable = true
+    linkBox.Parent = main
+    local lc2 = Instance.new("UICorner"); lc2.CornerRadius = UDim.new(0, 10); lc2.Parent = linkBox
+    local pad = Instance.new("UIPadding")
+    pad.PaddingTop = UDim.new(0, 8); pad.PaddingLeft = UDim.new(0, 10)
+    pad.PaddingRight = UDim.new(0, 10); pad.PaddingBottom = UDim.new(0, 8)
+    pad.Parent = linkBox
+
+    local foot = Instance.new("TextLabel")
+    foot.Size = UDim2.new(1, -48, 0, 60); foot.Position = UDim2.new(0, 24, 0, 392)
+    foot.BackgroundTransparency = 1
+    foot.Text = "Mở link bằng trình duyệt → vượt link → bấm NHẬN KEY → dán key vào ô trên → VERIFY.\nKey ngẫu nhiên theo máy, hạn 48h."
+    foot.Font = Enum.Font.Gotham; foot.TextSize = 11
+    foot.TextColor3 = T.faint; foot.TextXAlignment = Enum.TextXAlignment.Left
+    foot.TextYAlignment = Enum.TextYAlignment.Top; foot.TextWrapped = true
+    foot.Parent = main
+
+    -- ---------------- actions ----------------
+    getBtn.MouseButton1Click:Connect(function()
+        setStatus("Đang tạo link vượt...", T.dim)
+        local data, err = api("/api/getlink?hwid=" .. urlencode(HWID))
+        if not data then
+            setStatus("✘ " .. err, T.danger)
+            return
+        end
+        if data.status == "success" and data.link then
+            linkBox.Text = data.link
+            local copied = false
+            pcall(function()
+                if setclipboard then setclipboard(data.link); copied = true end
+            end)
+            if copied then
+                setStatus("✔ Đã COPY link! Mở trình duyệt, vượt link để lấy key.", T.ok)
+                notify("SIKE HUB", "Đã copy link vượt ✔")
+            else
+                setStatus("✔ Link đã hiện ở ô bên dưới — copy tay rồi mở trình duyệt vượt link.", T.ok)
+            end
+        else
+            setStatus("✘ " .. tostring(data.message or "Lỗi tạo link."), T.danger)
+        end
+    end)
+
+    verifyBtn.MouseButton1Click:Connect(function()
+        setStatus("Đang kiểm tra key...", T.dim)
+        local ok, info = verifyKey(keyBox.Text)
+        if ok then
+            saveKey(keyBox.Text)
+            local left = ""
+            if type(info) == "number" then
+                local h = math.max(0, math.floor((info / 1000 - os.time()) / 3600))
+                left = " (còn ~" .. h .. "h)"
+            end
+            setStatus("✔ Key hợp lệ" .. left .. "! Đang mở script...", T.ok)
+            notify("SIKE HUB", "Key hợp lệ ✔")
+            task.wait(0.8)
+            gui:Destroy()
+            passed = true
+        else
+            setStatus("✘ " .. tostring(info), T.danger)
+        end
+    end)
+
+    -- chặn script chạy tiếp cho tới khi nhập key đúng
+    while not passed do
+        task.wait(0.2)
+    end
+end
+
+--// ============================================================
+--//  TỚI ĐÂY LÀ KEY ĐÃ HỢP LỆ — CODE SCRIPT CHÍNH Ở BÊN DƯỚI
+--// ============================================================
