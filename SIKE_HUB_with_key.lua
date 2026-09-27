@@ -24,15 +24,26 @@ local _I1l1lI=_Il1l11(_llII11)
 local _Il11II={}
 local _e1II11=1
 for _p=1,#_I1l1lI,4 do
-local c1=_1lII1l[_I1l1lI:sub(_p,_p)] or 0
-local c2=_1lII1l[_I1l1lI:sub(_p+1,_p+1)] or 0
-local c3=_1lII1l[_I1l1lI:sub(_p+2,_p+2)] or 0
-local c4=_1lII1l[_I1l1lI:sub(_p+3,_p+3)] or 0
+local _s1=_I1l1lI:sub(_p,_p)
+local _s2=_I1l1lI:sub(_p+1,_p+1)
+local _s3=_I1l1lI:sub(_p+2,_p+2)
+local _s4=_I1l1lI:sub(_p+3,_p+3)
+if _s1=="=" or _s1=="" then break end
+local c1=_1lII1l[_s1] or 0
+local c2=_1lII1l[_s2] or 0
+local c3=(_s3=="=" or _s3=="") and 0 or (_1lII1l[_s3] or 0)
+local c4=(_s4=="=" or _s4=="") and 0 or (_1lII1l[_s4] or 0)
 local n=c1*262144+c2*4096+c3*64+c4
 _Il11II[_e1II11]=_lIl1l1((n-(n%65536))/65536)
-_Il11II[_e1II11+1]=_lIl1l1(((n%65536)-(n%256))/256)
-_Il11II[_e1II11+2]=_lIl1l1(n%256)
-_e1II11=_e1II11+3
+_e1II11=_e1II11+1
+if _s3~="=" and _s3~="" then
+_Il11II[_e1II11]=_lIl1l1(((n%65536)-(n%256))/256)
+_e1II11=_e1II11+1
+end
+if _s4~="=" and _s4~="" then
+_Il11II[_e1II11]=_lIl1l1(n%256)
+_e1II11=_e1II11+1
+end
 end
 local _1lll1l=_Il1l11(_Il11II)
 local _11IlI1=#_II1ll1
