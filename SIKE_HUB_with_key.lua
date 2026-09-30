@@ -366,7 +366,7 @@ end
 --//       AddDropdown · AddInput · AddSeperator · AddLine · AddParagraph
 --//       SetNotification · Unloaded
 --// ============================================================
-local SIKE_UI = (function()
+SIKE_UI = (function()
 	local Players = game:GetService("Players")
 	local Tween   = game:GetService("TweenService")
 	local UIS     = game:GetService("UserInputService")
@@ -414,6 +414,7 @@ local SIKE_UI = (function()
 		table.insert(LOG.errors,tostring(what)..": "..tostring(msg))
 		pcall(function() warn("[SIKE UI] "..tostring(what).." -> "..tostring(msg)) end)
 	end
+	UI._LOG=LOG
 	local function guard(what,fn)
 		return function(...)
 			local ok,r=pcall(fn,...)
@@ -427,7 +428,12 @@ local SIKE_UI = (function()
 	local function toastInit()
 		if toastGui and toastGui.Parent then return end
 		toastGui=mk("ScreenGui",{Name="SIKE_HUB_Toast",ResetOnSpawn=false,IgnoreGuiInset=true,ZIndexBehavior=Enum.ZIndexBehavior.Sibling,DisplayOrder=99999,Parent=parentGui})
-		toastList=mk("Frame",{Size=UDim2.new(0,304,1,-24),Position=UDim2.new(1,-316,0,12),BackgroundTransparency=1,ZIndex=1,Parent=toastGui})
+		local twd=304
+		pcall(function()
+			local cam=game:GetService("Workspace").CurrentCamera
+			if cam and cam.ViewportSize then twd=math.clamp(math.floor(cam.ViewportSize.X*0.42),170,304) end
+		end)
+		toastList=mk("Frame",{Size=UDim2.new(0,twd,1,-24),Position=UDim2.new(1,-(twd+12),0,12),BackgroundTransparency=1,ZIndex=1,Parent=toastGui})
 		mk("UIListLayout",{Padding=UDim.new(0,8),SortOrder=Enum.SortOrder.LayoutOrder,VerticalAlignment=Enum.VerticalAlignment.Top},toastList)
 	end
 	local function toast(t)
@@ -473,14 +479,20 @@ local SIKE_UI = (function()
 		end)
 		local sg=mk("ScreenGui",{Name="SIKE_HUB_UI",ResetOnSpawn=false,IgnoreGuiInset=true,ZIndexBehavior=Enum.ZIndexBehavior.Sibling,DisplayOrder=100,Parent=parentGui})
 		local vp=Vector2.new(1280,720)
-		pcall(function()
-			local cam=game:GetService("Workspace").CurrentCamera
-			if cam and cam.ViewportSize then vp=cam.ViewportSize end
-		end)
-		local W=math.clamp(math.floor(vp.X*(IS_MOBILE and 0.94 or 0.60)),300,680)
-		local H=math.clamp(math.floor(vp.Y*(IS_MOBILE and 0.90 or 0.82)),300,520)
-		local SB=IS_MOBILE and 116 or 146
-		local main=mk("Frame",{Size=UDim2.new(0,W,0,H),Position=UDim2.new(0.5,-W/2,0.5,-H/2),BackgroundColor3=T.bg0,BorderSizePixel=0,Active=true,ClipsDescendants=true,ZIndex=1,Parent=sg})
+		local function refreshVP()
+			pcall(function()
+				local cam=game:GetService("Workspace").CurrentCamera
+				local v=cam and cam.ViewportSize
+				if typeof(v)=="Vector2" then
+					vp=Vector2.new(v.X,v.Y)
+				elseif type(v)=="table" and tonumber(v.X) and tonumber(v.Y) then
+					vp=Vector2.new(v.X,v.Y)
+				end
+			end)
+		end
+		refreshVP()
+		local W,H,SB=620,460,146
+		local main=mk("Frame",{Size=UDim2.new(0,W,0,H),Position=UDim2.new(0.5,0,0.5,0),AnchorPoint=Vector2.new(0.5,0.5),BackgroundColor3=T.bg0,BorderSizePixel=0,Active=true,ClipsDescendants=true,ZIndex=1,Parent=sg})
 		corner(main,18)
 		stroke(main,T.accentDim,1,0.55)
 		local gl1=mk("Frame",{Size=UDim2.new(0,280,0,280),Position=UDim2.new(1,-140,0,-140),BackgroundColor3=T.accent,BackgroundTransparency=0.93,BorderSizePixel=0,ZIndex=0,Parent=main})
@@ -678,11 +690,29 @@ local SIKE_UI = (function()
 				end
 				cl.MouseButton1Click:Connect(function()
 					if open then closeL() return end
+					-- toạ độ TUYỆT ĐỐI so với overlay -> không lệch vì inset/scale
 					local base=Vector2.new(0,0)
-					pcall(function() base=Vector2.new(sg.AbsolutePosition.X,sg.AbsolutePosition.Y) end)
-					local h=math.clamp(#nd*30+14,44,182)
+					local rPos,rSize=Vector2.new(0,0),Vector2.new(180,32)
+					pcall(function()
+						base=Vector2.new(overlay.AbsolutePosition.X,overlay.AbsolutePosition.Y)
+						rPos=Vector2.new(row.AbsolutePosition.X,row.AbsolutePosition.Y)
+						rSize=Vector2.new(row.AbsoluteSize.X,row.AbsoluteSize.Y)
+					end)
+					pcall(refreshVP)
+					local vX,vY=tonumber(vp.X) or 1280,tonumber(vp.Y) or 720
+					local h=math.clamp(#nd*30+14,44,200)
+					local lw=math.max(rSize.X,180)
+					local lx=math.clamp(rPos.X-base.X,4,math.max(4,vX-lw-4))
+					local ly=rPos.Y-base.Y+rSize.Y+4
+					if ly+h>vY-6 then ly=math.max(4,(rPos.Y-base.Y)-h-4) end
 					catcher=mk("TextButton",{Size=UDim2.new(1,0,1,0),BackgroundTransparency=1,Text="",AutoButtonColor=false,ZIndex=901,Parent=overlay})
-					open=mk("ScrollingFrame",{Name="SIKE_Dropdown",Size=UDim2.new(0,math.max(row.AbsoluteSize.X,170),0,h),Position=UDim2.new(0,row.AbsolutePosition.X-base.X,0,row.AbsolutePosition.Y-base.Y+row.AbsoluteSize.Y+4),BackgroundColor3=T.bg1,BorderSizePixel=0,ScrollBarThickness=3,ScrollBarImageColor3=T.border3,CanvasSize=UDim2.new(0,0,0,0),AutomaticCanvasSize=Enum.AutomaticSize.Y,ElasticBehavior=Enum.ElasticBehavior.Never,ZIndex=902,Parent=overlay})
+					open=mk("ScrollingFrame",{Name="SIKE_Dropdown",Size=UDim2.new(0,lw,0,h),Position=UDim2.new(0,lx,0,ly),BackgroundColor3=T.bg1,BorderSizePixel=0,ScrollBarThickness=3,ScrollBarImageColor3=T.border3,CanvasSize=UDim2.new(0,0,0,0),AutomaticCanvasSize=Enum.AutomaticSize.Y,ElasticBehavior=Enum.ElasticBehavior.Never,ZIndex=902,Parent=overlay})
+					pcall(function() local us=mk("UIScale",{Scale=curScale or 1},open)
+						if curScale~=1 then
+							open.Size=UDim2.new(0,lw/curScale,0,h/curScale)
+							open.Position=UDim2.new(0,lx,0,ly)
+						end
+					end)
 					corner(open,8)
 					stroke(open,T.border3,1,0.2)
 					mk("UIListLayout",{Padding=UDim.new(0,2),SortOrder=Enum.SortOrder.LayoutOrder},open)
@@ -827,6 +857,31 @@ local SIKE_UI = (function()
 			return res
 		end
 
+		-- ===== tự căn vừa mọi màn hình (mobile / tablet / PC) =====
+		local curScale=1
+		local uiScale=mk("UIScale",{Scale=1},main)
+		local function fit()
+			pcall(refreshVP)
+			local vX,vY=tonumber(vp.X) or 1280,tonumber(vp.Y) or 720
+			local sx=(vX-12)/W
+			local sy=(vY-12)/H
+			local s=math.clamp(math.min(1,sx,sy),0.42,1)
+			uiScale.Scale=s
+			curScale=s
+			-- giữ trong màn hình sau khi scale
+			local wS,hS=W*s,H*s
+			local px=math.clamp(main.Position.X.Offset,-(vX-wS)/2,(vX-wS)/2)
+			local pz=math.clamp(main.Position.Y.Offset,-(vY-hS)/2,(vY-hS)/2)
+			main.Position=UDim2.new(0.5,px,0.5,pz)
+		end
+		fit()
+		pcall(function()
+			local cam=game:GetService("Workspace").CurrentCamera
+			if cam then
+				cam:GetPropertyChangedSignal("ViewportSize"):Connect(function() pcall(fit) end)
+			end
+		end)
+
 		-- kéo thả
 		do
 			local dragging,dStart,sStart=false,nil,nil
@@ -876,12 +931,13 @@ local SIKE_UI = (function()
 			end
 		end)
 		pcall(function() pillDot.BackgroundColor3=T.ok pillText.Text="READY" end)
-		task.delay(3,function()
+		task.delay(2,function()
 			pcall(function()
 				print(string.format("[SIKE HUB] UI: %d tab | %d section | %d widget | %d loi",LOG.tabs,LOG.sections,LOG.widgets,#LOG.errors))
+				for i=1,math.min(#LOG.errors,10) do print("  [SIKE UI] loi "..i..": "..LOG.errors[i]) end
 				if #LOG.errors>0 then
-					for i=1,math.min(#LOG.errors,6) do print("  loi "..i..": "..LOG.errors[i]) end
-					UI:SetNotification({"SIKE HUB · UI","CẢNH BÁO","Có "..#LOG.errors.." widget lỗi.\nXem console (F9) để biết chi tiết.\nVí dụ: "..tostring(LOG.errors[1]),12})
+					pillDot.BackgroundColor3=T.warn
+					pillText.Text="WARN "..#LOG.errors
 				end
 			end)
 		end)
@@ -895,7 +951,7 @@ end)()
 --//  SIKE FUNCS — lớp bọc API cho UI (Toggle/Button/Dropdown/Textbox)
 --//  Toggle / Button / Dropdown / Textbox / SetTable
 --// ============================================================
-local SIKE_FUNCS = (function()
+SIKE_FUNCS = (function()
 	local Funcs = {}
 	local SaveConfig = {}
 	local function checker(v, t, d)
@@ -1222,15 +1278,16 @@ local function fn2()
 		Net = nil,
 	}
 
-	tbl6.CommF_ = tbl6.Remotes:WaitForChild("CommF_")
-	tbl6.Net = tbl6.Modules:WaitForChild("Net")
+	pcall(function() tbl6.CommF_ = tbl6.Remotes:WaitForChild("CommF_") end)
+	pcall(function() tbl6.Net = tbl6.Modules:WaitForChild("Net") end)
 
-	local tbl7 = {
-		RegisterAttack = tbl6.Net:WaitForChild("RE/RegisterAttack"),
-		RegisterHit = tbl6.Net:WaitForChild("RE/RegisterHit"),
-		ReceivedHit = tbl6.Net:WaitForChild("RE/ReceivedHit"),
-		ShootGunEvent = tbl6.Net:WaitForChild("RE/ShootGunEvent"),
-	}
+	local tbl7 = {}
+	pcall(function()
+		tbl7.RegisterAttack = tbl6.Net:WaitForChild("RE/RegisterAttack")
+		tbl7.RegisterHit = tbl6.Net:WaitForChild("RE/RegisterHit")
+		tbl7.ReceivedHit = tbl6.Net:WaitForChild("RE/ReceivedHit")
+		tbl7.ShootGunEvent = tbl6.Net:WaitForChild("RE/ShootGunEvent")
+	end)
 
 	local placeId = game.PlaceId
 
@@ -1379,12 +1436,15 @@ local function fn2()
 		"Dough",
 	}
 
-	local ItemReplicationService = require(tbl5.ReplicatedStorage.ItemReplicationService)
-	local KEYS = require(tbl5.ReplicatedStorage.ItemReplicationService.KEYS)
-	local ItemId = require(tbl5.ReplicatedStorage.Economy.ItemId)
-	local ItemConfig = require(tbl5.ReplicatedStorage.ItemConfig)
-	local RarityUtil = require(tbl5.ReplicatedStorage.Modules.Asset.RarityUtil)
-	local PriceService = require(tbl5.ReplicatedStorage.PriceService)
+	local ItemReplicationService, KEYS, ItemId, ItemConfig, RarityUtil, PriceService
+	pcall(function()
+		ItemReplicationService = require(tbl5.ReplicatedStorage.ItemReplicationService)
+		KEYS = require(tbl5.ReplicatedStorage.ItemReplicationService.KEYS)
+		ItemId = require(tbl5.ReplicatedStorage.Economy.ItemId)
+		ItemConfig = require(tbl5.ReplicatedStorage.ItemConfig)
+		RarityUtil = require(tbl5.ReplicatedStorage.Modules.Asset.RarityUtil)
+		PriceService = require(tbl5.ReplicatedStorage.PriceService)
+	end)
 
 	local tbl13 = {
 		Moveset = "Melee",
@@ -3844,14 +3904,16 @@ local function fn2()
 	end
 
 	local tbl30 = {}
-	local v19 = next
-	local response, v20 = tbl5.ReplicatedStorage:WaitForChild("Remotes").CommF_:InvokeServer("GetFruits")
-
-	for _, v21 in v19, response, v20 do
-		if v21.Price >= 1000000 then
-			tbl30[v21.Name] = v21.Price
+	pcall(function()
+		local v19 = next
+		local response, v20 = tbl5.ReplicatedStorage:WaitForChild("Remotes").CommF_:InvokeServer("GetFruits")
+		if type(response) ~= "table" then return end
+		for _, v21 in v19, response, v20 do
+			if type(v21) == "table" and tonumber(v21.Price) and v21.Price >= 1000000 then
+				tbl30[v21.Name] = v21.Price
+			end
 		end
-	end
+	end)
 
 	tbl18.GetFruitInventory = function(arg, arg2)
 		local flag = arg2 or true
@@ -6334,7 +6396,7 @@ local function fn2()
 	local Fruits = v16:AddSection("Fruits")
 	Fruits:AddSeperator({ "Fruit Sniper" })
 	local tbl36 = {}
-	tbl6.CommF_:InvokeServer("GetFruits")
+	pcall(function() tbl6.CommF_:InvokeServer("GetFruits") end)
 	local response2
 
 	while true do
