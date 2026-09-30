@@ -399,6 +399,29 @@ local SIKE_UI = (function()
 
 	local UI={Unloaded=false}
 
+	-- --- gom lỗi + null-object: 1 widget lỗi KHÔNG làm chết cả menu ---
+	local LOG={errors={},tabs=0,sections=0,widgets=0}
+	local function nullObj()
+		local o={}
+		setmetatable(o,{__index=function(t,k)
+			local f=function() return o end
+			rawset(t,k,f)
+			return f
+		end})
+		return o
+	end
+	function LOG.err(what,msg)
+		table.insert(LOG.errors,tostring(what)..": "..tostring(msg))
+		pcall(function() warn("[SIKE UI] "..tostring(what).." -> "..tostring(msg)) end)
+	end
+	local function guard(what,fn)
+		return function(...)
+			local ok,r=pcall(fn,...)
+			if not ok then LOG.err(what,r) return nullObj() end
+			return r
+		end
+	end
+
 	-- ================= THÔNG BÁO (toast) =================
 	local toastGui,toastList,toastN= nil,nil,0
 	local function toastInit()
@@ -449,7 +472,14 @@ local SIKE_UI = (function()
 			if old then old:Destroy() end
 		end)
 		local sg=mk("ScreenGui",{Name="SIKE_HUB_UI",ResetOnSpawn=false,IgnoreGuiInset=true,ZIndexBehavior=Enum.ZIndexBehavior.Sibling,DisplayOrder=100,Parent=parentGui})
-		local W,H=(IS_MOBILE and 420 or 640),(IS_MOBILE and 360 or 484)
+		local vp=Vector2.new(1280,720)
+		pcall(function()
+			local cam=game:GetService("Workspace").CurrentCamera
+			if cam and cam.ViewportSize then vp=cam.ViewportSize end
+		end)
+		local W=math.clamp(math.floor(vp.X*(IS_MOBILE and 0.94 or 0.60)),300,680)
+		local H=math.clamp(math.floor(vp.Y*(IS_MOBILE and 0.90 or 0.82)),300,520)
+		local SB=IS_MOBILE and 116 or 146
 		local main=mk("Frame",{Size=UDim2.new(0,W,0,H),Position=UDim2.new(0.5,-W/2,0.5,-H/2),BackgroundColor3=T.bg0,BorderSizePixel=0,Active=true,ClipsDescendants=true,ZIndex=1,Parent=sg})
 		corner(main,18)
 		stroke(main,T.accentDim,1,0.55)
@@ -484,12 +514,12 @@ local SIKE_UI = (function()
 		corner(closeBtn,10)
 
 		local body=mk("Frame",{Size=UDim2.new(1,0,1,-64),Position=UDim2.new(0,0,0,64),BackgroundTransparency=1,ZIndex=2,Parent=main})
-		local sidebar=mk("ScrollingFrame",{Size=UDim2.new(0,146,1,-24),Position=UDim2.new(0,12,0,12),BackgroundColor3=T.bg1,BackgroundTransparency=0.3,BorderSizePixel=0,ScrollBarThickness=2,ScrollBarImageColor3=T.border2,ScrollBarImageTransparency=0.6,CanvasSize=UDim2.new(0,0,0,0),AutomaticCanvasSize=Enum.AutomaticSize.Y,ElasticBehavior=Enum.ElasticBehavior.Never,ZIndex=3,Parent=body})
+		local sidebar=mk("ScrollingFrame",{Size=UDim2.new(0,SB,1,-24),Position=UDim2.new(0,12,0,12),BackgroundColor3=T.bg1,BackgroundTransparency=0.3,BorderSizePixel=0,ScrollBarThickness=2,ScrollBarImageColor3=T.border2,ScrollBarImageTransparency=0.6,CanvasSize=UDim2.new(0,0,0,0),AutomaticCanvasSize=Enum.AutomaticSize.Y,ElasticBehavior=Enum.ElasticBehavior.Never,ZIndex=3,Parent=body})
 		corner(sidebar,14)
 		stroke(sidebar,T.border,1,0.5)
 		mk("UIListLayout",{Padding=UDim.new(0,3),SortOrder=Enum.SortOrder.LayoutOrder},sidebar)
 		mk("UIPadding",{PaddingTop=UDim.new(0,10),PaddingLeft=UDim.new(0,8),PaddingRight=UDim.new(0,10),PaddingBottom=UDim.new(0,10)},sidebar)
-		local pageHolder=mk("Frame",{Size=UDim2.new(1,-180,1,-24),Position=UDim2.new(0,168,0,12),BackgroundColor3=T.bg1,BackgroundTransparency=0.3,BorderSizePixel=0,ClipsDescendants=true,ZIndex=3,Parent=body})
+		local pageHolder=mk("Frame",{Size=UDim2.new(1,-(SB+34),1,-24),Position=UDim2.new(0,SB+22,0,12),BackgroundColor3=T.bg1,BackgroundTransparency=0.3,BorderSizePixel=0,ClipsDescendants=true,ZIndex=3,Parent=body})
 		corner(pageHolder,14)
 		stroke(pageHolder,T.border,1,0.5)
 		local overlay=mk("Frame",{Size=UDim2.new(1,0,1,0),BackgroundTransparency=1,ZIndex=900,Parent=sg})
@@ -555,6 +585,7 @@ local SIKE_UI = (function()
 				end
 				local cl=mk("TextButton",{Size=UDim2.new(1,0,1,0),BackgroundTransparency=1,Text="",AutoButtonColor=false,ZIndex=5,Parent=w})
 				cl.MouseButton1Click:Connect(function() set(not st) end)
+				obj.Parent=w
 				obj.SetValue=function(self,v,silent) set(v,silent) end
 				obj.Get=function() return obj.Value end
 				if st and o.Callback then task.spawn(function() pcall(o.Callback,st) end) end
@@ -574,7 +605,7 @@ local SIKE_UI = (function()
 				b.MouseEnter:Connect(function() tw(b,0.15,{BackgroundColor3=T.bg3}) end)
 				b.MouseLeave:Connect(function() tw(b,0.15,{BackgroundColor3=T.bg2}) end)
 				b.MouseButton1Click:Connect(function() if o.Callback then pcall(o.Callback) end end)
-				return {frame=b}
+				return {frame=b,Parent=b}
 			end
 
 			function sec:AddDropdown(o)
@@ -660,7 +691,7 @@ local SIKE_UI = (function()
 					catcher.MouseButton1Click:Connect(closeL)
 				end)
 				draw()
-				local obj={frame=w}
+				local obj={frame=w,Parent=w}
 				obj.Clear=function(self)
 					sel={}
 					draw()
@@ -696,7 +727,7 @@ local SIKE_UI = (function()
 				tb.Focused:Connect(function() tw(bs,0.15,{Color=T.accent}) end)
 				tb.FocusLost:Connect(submit)
 				tb.ReturnPressedFromOnScreenKeyboard:Connect(submit)
-				return {frame=w,box=tb,Get=function() return tb.Text end,Set=function(self,v) tb.Text=tostring(v) end}
+				return {frame=w,box=tb,Parent=w,Get=function() return tb.Text end,Set=function(self,v) tb.Text=tostring(v) end}
 			end
 
 			function sec:AddSeperator(names)
@@ -708,7 +739,7 @@ local SIKE_UI = (function()
 					local b=mk("Frame",{Size=UDim2.new(0,16,0,2),Position=UDim2.new(0,0,0,18),BackgroundColor3=T.violet,BorderSizePixel=0,ZIndex=3,Parent=w})
 					corner(b,1)
 				end
-				return {frame=bodyF}
+				return {frame=bodyF,Parent=bodyF}
 			end
 
 			function sec:AddLine()
@@ -729,7 +760,7 @@ local SIKE_UI = (function()
 				local tl,cl=read(o)
 				local title=mk("TextLabel",{Size=UDim2.new(1,0,0,16),BackgroundTransparency=1,Text=tl,Font=F.bold,TextSize=12,TextColor3=T.text,TextXAlignment=Enum.TextXAlignment.Left,LayoutOrder=1,ZIndex=3},w)
 				local content=mk("TextLabel",{Size=UDim2.new(1,0,0,0),AutomaticSize=Enum.AutomaticSize.Y,BackgroundTransparency=1,Text=cl,Font=F.reg,TextSize=11,TextColor3=T.textDim,TextWrapped=true,TextXAlignment=Enum.TextXAlignment.Left,TextYAlignment=Enum.TextYAlignment.Top,LayoutOrder=2,ZIndex=3},w)
-				local obj={frame=w}
+				local obj={frame=w,Parent=w}
 				obj.Set=function(self,t)
 					local a,b=read(t)
 					if a~="" then title.Text=a end
@@ -737,11 +768,21 @@ local SIKE_UI = (function()
 				end
 				return obj
 			end
+			for _,mn in ipairs({"AddToggle","AddButton","AddDropdown","AddInput","AddSeperator","AddLine","AddParagraph"}) do
+				local real=sec[mn]
+				sec[mn]=function(self,...)
+					LOG.widgets=LOG.widgets+1
+					local ok,r=pcall(real,self,...)
+					if not ok then LOG.err(mn,r) return nullObj() end
+					return r
+				end
+			end
+			sec.Parent=bodyF
 			return sec
 		end
 
 		local win={}
-		function win:CreateTab(o)
+		local function buildTab(o)
 			o=o or {}
 			local i=#tabs+1
 			local name=tostring(o.Name or ("Tab "..i))
@@ -766,10 +807,24 @@ local SIKE_UI = (function()
 			local so=0
 			function tab:AddSection(name,open)
 				so=so+1
-				return newSection(scroll,so,name)
+				LOG.sections=LOG.sections+1
+				local ok,r=pcall(newSection,scroll,so,name)
+				if not ok then LOG.err("AddSection",r) return nullObj() end
+				return r
 			end
+			tab.Parent=page
+			LOG.tabs=LOG.tabs+1
 			if i==1 then setTab(1) end
 			return tab
+		end
+
+		function win:CreateTab(o)
+			local ok,res=pcall(buildTab,o)
+			if not ok then
+				LOG.err("CreateTab["..tostring(o and o.Name).."]",res)
+				return {Parent=nil,AddSection=function() return nullObj() end}
+			end
+			return res
 		end
 
 		-- kéo thả
@@ -821,6 +876,15 @@ local SIKE_UI = (function()
 			end
 		end)
 		pcall(function() pillDot.BackgroundColor3=T.ok pillText.Text="READY" end)
+		task.delay(3,function()
+			pcall(function()
+				print(string.format("[SIKE HUB] UI: %d tab | %d section | %d widget | %d loi",LOG.tabs,LOG.sections,LOG.widgets,#LOG.errors))
+				if #LOG.errors>0 then
+					for i=1,math.min(#LOG.errors,6) do print("  loi "..i..": "..LOG.errors[i]) end
+					UI:SetNotification({"SIKE HUB · UI","CẢNH BÁO","Có "..#LOG.errors.." widget lỗi.\nXem console (F9) để biết chi tiết.\nVí dụ: "..tostring(LOG.errors[1]),12})
+				end
+			end)
+		end)
 		return win
 	end
 
@@ -1060,7 +1124,8 @@ local function fn2()
 		end), nil
 
 	if not lua then
-		error("Failed to load library: " .. tostring(v7))
+		warn("[SIKE HUB] load library loi: " .. tostring(v7))
+		lua = function() return SIKE_UI end
 	end
 
 	local FuncsV3, v8 = (function()
@@ -1068,19 +1133,25 @@ local function fn2()
 		end), nil
 
 	if not FuncsV3 then
-		error("Failed to load functions: " .. tostring(v8))
+		warn("[SIKE HUB] load funcs loi: " .. tostring(v8))
+		FuncsV3 = function() return SIKE_FUNCS end
 	end
 
 	local ok, result = pcall(lua)
 
-	if not ok then
-		error("Library execution failed: " .. tostring(result))
+	if not ok or type(result) ~= "table" then
+		warn("[SIKE HUB] UI lib loi: " .. tostring(result))
+		pcall(function()
+			game:GetService("StarterGui"):SetCore("SendNotification", { Title = "SIKE HUB", Text = "UI lib loi, dung ban du phong: " .. tostring(result), Duration = 15 })
+		end)
+		result = SIKE_UI
 	end
 
 	local ok2, result2 = pcall(FuncsV3)
 
-	if not ok2 then
-		error("Functions execution failed: " .. tostring(result2))
+	if not ok2 or type(result2) ~= "table" then
+		warn("[SIKE HUB] Funcs loi: " .. tostring(result2))
+		result2 = SIKE_FUNCS
 	end
 
 	local v9 = result
@@ -7357,4 +7428,12 @@ local function fn2()
 	tbl37[5] = 0.5
 	setNotification(v55, tbl37)
 end
-task.spawn(fn2)
+task.spawn(function()
+	local okRun, errRun = pcall(fn2)
+	if not okRun then
+		warn("[SIKE HUB] LOI SCRIPT: " .. tostring(errRun))
+		pcall(function()
+			game:GetService("StarterGui"):SetCore("SendNotification", { Title = "SIKE HUB - LOI SCRIPT", Text = tostring(errRun), Duration = 25 })
+		end)
+	end
+end)
