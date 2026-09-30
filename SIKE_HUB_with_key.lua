@@ -1,9 +1,6 @@
 --// ============================================================
 --//  SIKE HUB · BLOX FRUITS
---//  UI: SIKE HUB (nhúng sẵn) · KEY SYSTEM: liên kết server key
---//  MADE BY SIKE MOD
---// ============================================================
---//  THỨ TỰ: [1] KEY SYSTEM  ->  [2] UI LIB  ->  [3] SCRIPT CHÍNH
+--//  KEY SYSTEM: server key  ·  UI: nguyen ban (khong sua gi)
 --// ============================================================
 
 --// ============================================================
@@ -360,667 +357,6 @@ end
 
 --// ============================================================
 
---// ============================================================
---//  SIKE UI — thư viện giao diện nhúng (Sike Hub style)
---//  API: CreateWindow · CreateTab · AddSection · AddToggle · AddButton
---//       AddDropdown · AddInput · AddSeperator · AddLine · AddParagraph
---//       SetNotification · Unloaded
---// ============================================================
-SIKE_UI = (function()
-	local Players = game:GetService("Players")
-	local Tween   = game:GetService("TweenService")
-	local UIS     = game:GetService("UserInputService")
-	local LP      = Players.LocalPlayer
-	local IS_MOBILE = UIS.TouchEnabled and not UIS.MouseEnabled
-	local parentGui = (gethui and gethui()) or game:GetService("CoreGui")
-
-	local T={bg0=Color3.fromRGB(8,10,15),bg1=Color3.fromRGB(13,16,23),bg2=Color3.fromRGB(18,22,32),bg3=Color3.fromRGB(24,29,42),bg4=Color3.fromRGB(32,38,54),text=Color3.fromRGB(242,245,252),textDim=Color3.fromRGB(148,158,180),textFaint=Color3.fromRGB(80,90,112),accent=Color3.fromRGB(88,196,255),accentHot=Color3.fromRGB(120,220,255),accentDim=Color3.fromRGB(40,88,140),violet=Color3.fromRGB(160,130,255),ok=Color3.fromRGB(72,235,168),okDim=Color3.fromRGB(30,110,82),warn=Color3.fromRGB(255,200,110),danger=Color3.fromRGB(255,100,115),dangerDim=Color3.fromRGB(90,30,40),border=Color3.fromRGB(30,36,50),border2=Color3.fromRGB(48,56,74),border3=Color3.fromRGB(66,76,98)}
-	local F={black=Enum.Font.GothamBlack,bold=Enum.Font.GothamBold,med=Enum.Font.GothamMedium,reg=Enum.Font.Gotham,mono=Enum.Font.Code}
-
-	local function mk(c,p,par)
-		local o=Instance.new(c)
-		if p then
-			for k,v in pairs(p) do
-				if k~="Parent" then pcall(function() o[k]=v end) end
-			end
-		end
-		o.Parent=(p and p.Parent) or par
-		return o
-	end
-	local function corner(o,r) mk("UICorner",{CornerRadius=UDim.new(0,r or 10)},o) end
-	local function stroke(o,c,t,tr) mk("UIStroke",{Color=c or T.border2,Thickness=t or 1,Transparency=tr or 0.5,ApplyStrokeMode=Enum.ApplyStrokeMode.Border},o) end
-	local function tw(o,t,p,s,d) return Tween:Create(o,TweenInfo.new(t,s or Enum.EasingStyle.Quint,d or Enum.EasingDirection.Out),p):Play() end
-	local function glass(par,p,r)
-		local f=mk("Frame",p,par)
-		corner(f,r or 12)
-		stroke(f,T.border2,1,0.5)
-		return f
-	end
-
-	local UI={Unloaded=false}
-
-	-- --- gom lỗi + null-object: 1 widget lỗi KHÔNG làm chết cả menu ---
-	local LOG={errors={},tabs=0,sections=0,widgets=0}
-	local function nullObj()
-		local o={}
-		setmetatable(o,{__index=function(t,k)
-			local f=function() return o end
-			rawset(t,k,f)
-			return f
-		end})
-		return o
-	end
-	function LOG.err(what,msg)
-		table.insert(LOG.errors,tostring(what)..": "..tostring(msg))
-		pcall(function() warn("[SIKE UI] "..tostring(what).." -> "..tostring(msg)) end)
-	end
-	UI._LOG=LOG
-	local function guard(what,fn)
-		return function(...)
-			local ok,r=pcall(fn,...)
-			if not ok then LOG.err(what,r) return nullObj() end
-			return r
-		end
-	end
-
-	-- ================= THÔNG BÁO (toast) =================
-	local toastGui,toastList,toastN= nil,nil,0
-	local function toastInit()
-		if toastGui and toastGui.Parent then return end
-		toastGui=mk("ScreenGui",{Name="SIKE_HUB_Toast",ResetOnSpawn=false,IgnoreGuiInset=true,ZIndexBehavior=Enum.ZIndexBehavior.Sibling,DisplayOrder=99999,Parent=parentGui})
-		local twd=304
-		pcall(function()
-			local cam=game:GetService("Workspace").CurrentCamera
-			if cam and cam.ViewportSize then twd=math.clamp(math.floor(cam.ViewportSize.X*0.42),170,304) end
-		end)
-		toastList=mk("Frame",{Size=UDim2.new(0,twd,1,-24),Position=UDim2.new(1,-(twd+12),0,12),BackgroundTransparency=1,ZIndex=1,Parent=toastGui})
-		mk("UIListLayout",{Padding=UDim.new(0,8),SortOrder=Enum.SortOrder.LayoutOrder,VerticalAlignment=Enum.VerticalAlignment.Top},toastList)
-	end
-	local function toast(t)
-		pcall(function()
-			toastInit()
-			toastN=toastN+1
-			local ttl=tostring(t[1] or "SIKE HUB")
-			local sub=t[2] and tostring(t[2]) or ""
-			local body=t[3] and tostring(t[3]) or ""
-			local dur=tonumber(t[4]) or 4
-			local card=mk("Frame",{Size=UDim2.new(1,0,0,0),AutomaticSize=Enum.AutomaticSize.Y,BackgroundColor3=T.bg1,BackgroundTransparency=1,BorderSizePixel=0,LayoutOrder=toastN,ZIndex=2,Parent=toastList})
-			corner(card,12)
-			stroke(card,T.border2,1,0.4)
-			mk("UIPadding",{PaddingTop=UDim.new(0,10),PaddingBottom=UDim.new(0,10),PaddingLeft=UDim.new(0,16),PaddingRight=UDim.new(0,14)},card)
-			mk("UIListLayout",{Padding=UDim.new(0,3),SortOrder=Enum.SortOrder.LayoutOrder},card)
-			local bar=mk("Frame",{Size=UDim2.new(0,3,0,18),BackgroundColor3=T.accent,BorderSizePixel=0,LayoutOrder=0,ZIndex=3,Parent=card})
-			corner(bar,2)
-			mk("TextLabel",{Size=UDim2.new(1,0,0,16),BackgroundTransparency=1,Text=ttl,Font=F.bold,TextSize=13,TextColor3=T.text,TextXAlignment=Enum.TextXAlignment.Left,LayoutOrder=1,ZIndex=3},card)
-			if sub~="" then mk("TextLabel",{Size=UDim2.new(1,0,0,13),BackgroundTransparency=1,Text=string.upper(sub),Font=F.bold,TextSize=9,TextColor3=T.accentHot,TextXAlignment=Enum.TextXAlignment.Left,LayoutOrder=2,ZIndex=3},card) end
-			if body~="" then mk("TextLabel",{Size=UDim2.new(1,0,0,0),AutomaticSize=Enum.AutomaticSize.Y,BackgroundTransparency=1,Text=body,Font=F.reg,TextSize=11,TextColor3=T.textDim,TextWrapped=true,TextXAlignment=Enum.TextXAlignment.Left,LayoutOrder=3,ZIndex=3},card) end
-			tw(card,0.25,{BackgroundTransparency=0.06})
-			task.delay(math.max(1,dur),function()
-				pcall(function()
-					if card and card.Parent then
-						tw(card,0.3,{BackgroundTransparency=1})
-						task.wait(0.32)
-						card:Destroy()
-					end
-				end)
-			end)
-		end)
-	end
-	function UI:SetNotification(t) toast(t or {}) end
-
-	-- ================= CỬA SỔ =================
-	function UI:CreateWindow(cfg)
-		cfg=cfg or {}
-		local winTitle=tostring(cfg.Title or "SIKE HUB")
-		local winSub=(type(cfg.Description)=="string" and cfg.Description~="") and cfg.Description or "BLOX FRUITS"
-		pcall(function()
-			local old=parentGui:FindFirstChild("SIKE_HUB_UI")
-			if old then old:Destroy() end
-		end)
-		local sg=mk("ScreenGui",{Name="SIKE_HUB_UI",ResetOnSpawn=false,IgnoreGuiInset=true,ZIndexBehavior=Enum.ZIndexBehavior.Sibling,DisplayOrder=100,Parent=parentGui})
-		local vp=Vector2.new(1280,720)
-		local function refreshVP()
-			pcall(function()
-				local cam=game:GetService("Workspace").CurrentCamera
-				local v=cam and cam.ViewportSize
-				if typeof(v)=="Vector2" then
-					vp=Vector2.new(v.X,v.Y)
-				elseif type(v)=="table" and tonumber(v.X) and tonumber(v.Y) then
-					vp=Vector2.new(v.X,v.Y)
-				end
-			end)
-		end
-		refreshVP()
-		local W,H,SB=620,460,146
-		local main=mk("Frame",{Size=UDim2.new(0,W,0,H),Position=UDim2.new(0.5,0,0.5,0),AnchorPoint=Vector2.new(0.5,0.5),BackgroundColor3=T.bg0,BorderSizePixel=0,Active=true,ClipsDescendants=true,ZIndex=1,Parent=sg})
-		corner(main,18)
-		stroke(main,T.accentDim,1,0.55)
-		local gl1=mk("Frame",{Size=UDim2.new(0,280,0,280),Position=UDim2.new(1,-140,0,-140),BackgroundColor3=T.accent,BackgroundTransparency=0.93,BorderSizePixel=0,ZIndex=0,Parent=main})
-		corner(gl1,140)
-		mk("UIGradient",{Color=ColorSequence.new({ColorSequenceKeypoint.new(0,T.accent),ColorSequenceKeypoint.new(1,T.violet)}),Rotation=45},gl1)
-		local gl2=mk("Frame",{Size=UDim2.new(0,220,0,220),Position=UDim2.new(0,-110,1,-110),BackgroundColor3=T.violet,BackgroundTransparency=0.94,BorderSizePixel=0,ZIndex=0,Parent=main})
-		corner(gl2,110)
-		local topLine=mk("Frame",{Size=UDim2.new(1,-36,0,1),Position=UDim2.new(0,18,0,0),BackgroundColor3=T.accent,BorderSizePixel=0,ZIndex=10,Parent=main})
-		mk("UIGradient",{Color=ColorSequence.new({ColorSequenceKeypoint.new(0,T.bg0),ColorSequenceKeypoint.new(0.25,T.accent),ColorSequenceKeypoint.new(0.5,T.violet),ColorSequenceKeypoint.new(0.75,T.accent),ColorSequenceKeypoint.new(1,T.bg0)})},topLine)
-
-		local header=mk("Frame",{Size=UDim2.new(1,0,0,64),BackgroundColor3=T.bg1,BackgroundTransparency=0.15,BorderSizePixel=0,ZIndex=2,Parent=main})
-		corner(header,18)
-		mk("Frame",{Size=UDim2.new(1,0,0.5,0),Position=UDim2.new(0,0,0.5,0),BackgroundColor3=T.bg1,BackgroundTransparency=0.15,BorderSizePixel=0,ZIndex=2},header)
-		local logoBox=mk("Frame",{Size=UDim2.new(0,40,0,40),Position=UDim2.new(0,18,0.5,-20),BackgroundColor3=T.bg3,BorderSizePixel=0,ZIndex=4,Parent=header})
-		corner(logoBox,12)
-		stroke(logoBox,T.accentDim,1,0.3)
-		local inner=mk("Frame",{Size=UDim2.new(0,26,0,26),Position=UDim2.new(0.5,-13,0.5,-13),BackgroundColor3=T.accent,BackgroundTransparency=0.86,BorderSizePixel=0,ZIndex=5,Parent=logoBox})
-		corner(inner,13)
-		mk("TextLabel",{Size=UDim2.new(1,0,1,0),BackgroundTransparency=1,Text="S",Font=F.black,TextSize=22,TextColor3=T.accentHot,ZIndex=6},logoBox)
-		mk("TextLabel",{Size=UDim2.new(0,300,0,20),Position=UDim2.new(0,72,0,12),BackgroundTransparency=1,Text=winTitle,Font=F.black,TextSize=17,TextColor3=T.text,TextXAlignment=Enum.TextXAlignment.Left,ZIndex=4},header)
-		mk("TextLabel",{Size=UDim2.new(0,300,0,15),Position=UDim2.new(0,72,0,34),BackgroundTransparency=1,Text=string.upper(winSub),Font=F.reg,TextSize=11,TextColor3=T.textFaint,TextXAlignment=Enum.TextXAlignment.Left,ZIndex=4},header)
-		local pill=mk("Frame",{Size=UDim2.new(0,104,0,26),Position=UDim2.new(1,-186,0.5,-13),BackgroundColor3=T.bg2,BorderSizePixel=0,ZIndex=4,Parent=header})
-		corner(pill,13)
-		local pillStroke=stroke(pill,T.border2,1,0.4)
-		local pillDot=mk("Frame",{Size=UDim2.new(0,8,0,8),Position=UDim2.new(0,13,0.5,-4),BackgroundColor3=T.textFaint,BorderSizePixel=0,ZIndex=5,Parent=pill})
-		corner(pillDot,8)
-		local pillText=mk("TextLabel",{Size=UDim2.new(1,-28,1,0),Position=UDim2.new(0,26,0,0),BackgroundTransparency=1,Text="IDLE",Font=F.bold,TextSize=11,TextColor3=T.textDim,TextXAlignment=Enum.TextXAlignment.Left,ZIndex=5},pill)
-		local minBtn=mk("TextButton",{Size=UDim2.new(0,32,0,32),Position=UDim2.new(1,-76,0.5,-16),BackgroundColor3=T.bg3,BorderSizePixel=0,Text="—",Font=F.bold,TextSize=16,TextColor3=T.text,AutoButtonColor=false,ZIndex=6,Parent=header})
-		corner(minBtn,10)
-		local closeBtn=mk("TextButton",{Size=UDim2.new(0,32,0,32),Position=UDim2.new(1,-40,0.5,-16),BackgroundColor3=T.bg3,BorderSizePixel=0,Text="✕",Font=F.bold,TextSize=15,TextColor3=T.text,AutoButtonColor=false,ZIndex=6,Parent=header})
-		corner(closeBtn,10)
-
-		local body=mk("Frame",{Size=UDim2.new(1,0,1,-64),Position=UDim2.new(0,0,0,64),BackgroundTransparency=1,ZIndex=2,Parent=main})
-		local sidebar=mk("ScrollingFrame",{Size=UDim2.new(0,SB,1,-24),Position=UDim2.new(0,12,0,12),BackgroundColor3=T.bg1,BackgroundTransparency=0.3,BorderSizePixel=0,ScrollBarThickness=2,ScrollBarImageColor3=T.border2,ScrollBarImageTransparency=0.6,CanvasSize=UDim2.new(0,0,0,0),AutomaticCanvasSize=Enum.AutomaticSize.Y,ElasticBehavior=Enum.ElasticBehavior.Never,ZIndex=3,Parent=body})
-		corner(sidebar,14)
-		stroke(sidebar,T.border,1,0.5)
-		mk("UIListLayout",{Padding=UDim.new(0,3),SortOrder=Enum.SortOrder.LayoutOrder},sidebar)
-		mk("UIPadding",{PaddingTop=UDim.new(0,10),PaddingLeft=UDim.new(0,8),PaddingRight=UDim.new(0,10),PaddingBottom=UDim.new(0,10)},sidebar)
-		local pageHolder=mk("Frame",{Size=UDim2.new(1,-(SB+34),1,-24),Position=UDim2.new(0,SB+22,0,12),BackgroundColor3=T.bg1,BackgroundTransparency=0.3,BorderSizePixel=0,ClipsDescendants=true,ZIndex=3,Parent=body})
-		corner(pageHolder,14)
-		stroke(pageHolder,T.border,1,0.5)
-		local overlay=mk("Frame",{Size=UDim2.new(1,0,1,0),BackgroundTransparency=1,ZIndex=900,Parent=sg})
-
-		local tabs,tabsBtn={},{}
-		local current=nil
-		local function setTab(i)
-			current=i
-			for k,t in pairs(tabs) do
-				t.page.Visible=(k==i)
-				t.ind.Visible=(k==i)
-				tw(t.lbl,0.15,{TextColor3=(k==i) and T.text or T.textDim})
-				tw(t.btn,0.15,{BackgroundColor3=(k==i) and T.bg3 or T.bg2,BackgroundTransparency=(k==i) and 0.15 or 0.5})
-				if t.icon then tw(t.icon,0.15,{ImageColor3=(k==i) and T.accentHot or T.textDim}) end
-			end
-			if tabsBtn[i] then tabsBtn[i].ScrollDistance=0 end
-		end
-
-		local function newSection(scroll,order,name)
-			local holder=mk("Frame",{Size=UDim2.new(1,0,0,0),AutomaticSize=Enum.AutomaticSize.Y,BackgroundTransparency=1,LayoutOrder=order,Parent=scroll})
-			mk("UIListLayout",{Padding=UDim.new(0,8),SortOrder=Enum.SortOrder.LayoutOrder},holder)
-			local head=mk("TextButton",{Size=UDim2.new(1,0,0,24),BackgroundTransparency=1,Text="",AutoButtonColor=false,LayoutOrder=1,ZIndex=4,Parent=holder})
-			mk("TextLabel",{Size=UDim2.new(1,-18,0,15),BackgroundTransparency=1,Text=string.upper(tostring(name)),Font=F.bold,TextSize=10,TextColor3=T.textFaint,TextXAlignment=Enum.TextXAlignment.Left,ZIndex=5},head)
-			local bar=mk("Frame",{Size=UDim2.new(0,22,0,2),Position=UDim2.new(0,0,0,19),BackgroundColor3=T.accent,BorderSizePixel=0,ZIndex=5,Parent=head})
-			corner(bar,1)
-			local chev=mk("TextLabel",{Size=UDim2.new(0,16,1,0),Position=UDim2.new(1,-16,0,0),BackgroundTransparency=1,Text="▾",Font=F.bold,TextSize=11,TextColor3=T.textFaint,ZIndex=5},head)
-			local bodyF=mk("Frame",{Size=UDim2.new(1,0,0,0),AutomaticSize=Enum.AutomaticSize.Y,BackgroundTransparency=1,LayoutOrder=2,Parent=holder})
-			mk("UIListLayout",{Padding=UDim.new(0,8),SortOrder=Enum.SortOrder.LayoutOrder},bodyF)
-			local n,collapsed=0,false
-			head.MouseButton1Click:Connect(function()
-				collapsed=not collapsed
-				bodyF.Visible=not collapsed
-				chev.Text=collapsed and "▸" or "▾"
-				tw(chev,0.15,{TextColor3=collapsed and T.textDim or T.textFaint})
-			end)
-			local sec={}
-			local function nxt() n=n+1 return n end
-
-			function sec:AddToggle(o)
-				o=o or {}
-				local st=o.Default and true or false
-				local w=glass(bodyF,{Size=UDim2.new(1,0,0,IS_MOBILE and 74 or 66),BackgroundColor3=T.bg2,BackgroundTransparency=0.15,BorderSizePixel=0,LayoutOrder=nxt()},12)
-				mk("TextLabel",{Size=UDim2.new(1,-104,0,18),Position=UDim2.new(0,16,0,12),BackgroundTransparency=1,Text=tostring(o.Title or ""),Font=F.bold,TextSize=13,TextColor3=T.text,TextXAlignment=Enum.TextXAlignment.Left,TextTruncate=Enum.TextTruncate.AtEnd},w)
-				if o.Content and o.Content~="" then
-					mk("TextLabel",{Size=UDim2.new(1,-104,0,14),Position=UDim2.new(0,16,0,32),BackgroundTransparency=1,Text=tostring(o.Content),Font=F.reg,TextSize=11,TextColor3=T.textDim,TextXAlignment=Enum.TextXAlignment.Left,TextTruncate=Enum.TextTruncate.AtEnd},w)
-				end
-				local track=mk("Frame",{Size=UDim2.new(0,48,0,26),Position=UDim2.new(1,-64,0.5,-13),BackgroundColor3=st and T.okDim or T.bg3,BorderSizePixel=0,ZIndex=3,Parent=w})
-				corner(track,13)
-				local trS=mk("UIStroke",{Color=st and T.ok or T.border2,Thickness=1,Transparency=0.3},track)
-				local knob=mk("Frame",{Size=UDim2.new(0,20,0,20),Position=st and UDim2.new(1,-23,0.5,-10) or UDim2.new(0,3,0.5,-10),BackgroundColor3=Color3.new(1,1,1),BorderSizePixel=0,ZIndex=4,Parent=track})
-				corner(knob,10)
-				local function draw()
-					tw(knob,0.2,{Position=st and UDim2.new(1,-23,0.5,-10) or UDim2.new(0,3,0.5,-10)})
-					tw(track,0.2,{BackgroundColor3=st and T.okDim or T.bg3})
-					tw(trS,0.2,{Color=st and T.ok or T.border2})
-				end
-				local obj={Value=st}
-				local function set(v,silent)
-					v=v and true or false
-					if obj.Value==v then return end
-					st=v obj.Value=v draw()
-					if not silent and o.Callback then pcall(o.Callback,v) end
-				end
-				local cl=mk("TextButton",{Size=UDim2.new(1,0,1,0),BackgroundTransparency=1,Text="",AutoButtonColor=false,ZIndex=5,Parent=w})
-				cl.MouseButton1Click:Connect(function() set(not st) end)
-				obj.Parent=w
-				obj.SetValue=function(self,v,silent) set(v,silent) end
-				obj.Get=function() return obj.Value end
-				if st and o.Callback then task.spawn(function() pcall(o.Callback,st) end) end
-				return obj
-			end
-
-			function sec:AddButton(o)
-				o=o or {}
-				local b=mk("TextButton",{Size=UDim2.new(1,0,0,IS_MOBILE and 48 or 42),BackgroundColor3=T.bg2,BorderSizePixel=0,Text=tostring(o.Title or ""),Font=F.bold,TextSize=13,TextColor3=T.text,AutoButtonColor=false,LayoutOrder=nxt(),ZIndex=3,Parent=bodyF})
-				corner(b,11)
-				stroke(b,T.border2,1,0.45)
-				if o.Content and o.Content~="" then
-					b.Text=""
-					mk("TextLabel",{Size=UDim2.new(1,-24,0,15),Position=UDim2.new(0,14,0,7),BackgroundTransparency=1,Text=tostring(o.Title or ""),Font=F.bold,TextSize=13,TextColor3=T.text,TextXAlignment=Enum.TextXAlignment.Left,ZIndex=4},b)
-					mk("TextLabel",{Size=UDim2.new(1,-24,0,12),Position=UDim2.new(0,14,0,23),BackgroundTransparency=1,Text=tostring(o.Content),Font=F.reg,TextSize=10,TextColor3=T.textFaint,TextXAlignment=Enum.TextXAlignment.Left,TextTruncate=Enum.TextTruncate.AtEnd,ZIndex=4},b)
-				end
-				b.MouseEnter:Connect(function() tw(b,0.15,{BackgroundColor3=T.bg3}) end)
-				b.MouseLeave:Connect(function() tw(b,0.15,{BackgroundColor3=T.bg2}) end)
-				b.MouseButton1Click:Connect(function() if o.Callback then pcall(o.Callback) end end)
-				return {frame=b,Parent=b}
-			end
-
-			function sec:AddDropdown(o)
-				o=o or {}
-				local multi=o.Multi and true or false
-				local function norm(e)
-					if type(e)=="table" then return {display=e.display or e.value,value=e.value or e.display} end
-					return {display=e,value=e}
-				end
-				local nd={}
-				for _,e in ipairs(o.Options or {}) do table.insert(nd,norm(e)) end
-				local sel={}
-				local function pick(v)
-					sel={}
-					if type(v)=="table" then for _,x in ipairs(v) do if x~=nil and x~="" then table.insert(sel,tostring(x)) end end
-					elseif v~=nil and v~="" then table.insert(sel,tostring(v)) end
-				end
-				pick(o.Default)
-				local w=glass(bodyF,{Size=UDim2.new(1,0,0,IS_MOBILE and 74 or 66),BackgroundColor3=T.bg2,BackgroundTransparency=0.15,BorderSizePixel=0,LayoutOrder=nxt()},12)
-				mk("TextLabel",{Size=UDim2.new(1,-120,0,18),Position=UDim2.new(0,16,0,12),BackgroundTransparency=1,Text=tostring(o.Title or ""),Font=F.bold,TextSize=13,TextColor3=T.text,TextXAlignment=Enum.TextXAlignment.Left,TextTruncate=Enum.TextTruncate.AtEnd},w)
-				if o.Content and o.Content~="" then
-					mk("TextLabel",{Size=UDim2.new(1,-120,0,14),Position=UDim2.new(0,16,0,32),BackgroundTransparency=1,Text=tostring(o.Content),Font=F.reg,TextSize=11,TextColor3=T.textDim,TextXAlignment=Enum.TextXAlignment.Left,TextTruncate=Enum.TextTruncate.AtEnd},w)
-				end
-				local row=mk("Frame",{Size=UDim2.new(1,-32,0,32),Position=UDim2.new(0,16,0,36),BackgroundColor3=T.bg3,BorderSizePixel=0,ZIndex=3,Parent=w})
-				corner(row,8)
-				stroke(row,T.border2,1,0.4)
-				local valueLbl=mk("TextLabel",{Size=UDim2.new(1,-34,1,0),Position=UDim2.new(0,10,0,0),BackgroundTransparency=1,Text="",Font=F.mono,TextSize=11,TextColor3=T.accentHot,TextXAlignment=Enum.TextXAlignment.Left,TextTruncate=Enum.TextTruncate.AtEnd,ZIndex=4},row)
-				mk("TextLabel",{Size=UDim2.new(0,20,1,0),Position=UDim2.new(1,-24,0,0),BackgroundTransparency=1,Text="▾",Font=F.bold,TextSize=12,TextColor3=T.textDim,ZIndex=4},row)
-				local cl=mk("TextButton",{Size=UDim2.new(1,0,1,0),BackgroundTransparency=1,Text="",AutoButtonColor=false,ZIndex=5,Parent=row})
-				local open,catcher=nil,nil
-				local function closeL()
-					if open and open.Parent then open:Destroy() end
-					if catcher and catcher.Parent then catcher:Destroy() end
-					open,catcher=nil,nil
-				end
-				local function draw()
-					if #sel==0 then
-						valueLbl.Text=(o.Multi and "none") or "—"
-					elseif #sel<=2 then
-						valueLbl.Text=table.concat(sel,", ")
-					else
-						valueLbl.Text=table.concat(sel,", ",1,2).." +"..tostring(#sel-2)
-					end
-				end
-				local function makeRow(i,opt)
-					local is= table.find(sel,opt.value)~=nil
-					local b=mk("TextButton",{Size=UDim2.new(1,0,0,30),BackgroundColor3=is and T.accentDim or T.bg3,BorderSizePixel=0,Text=tostring(opt.display),Font=F.med,TextSize=12,TextColor3=is and T.text or T.textDim,TextXAlignment=Enum.TextXAlignment.Left,AutoButtonColor=false,LayoutOrder=i,ZIndex=902,Parent=open})
-					corner(b,6)
-					mk("UIPadding",{PaddingLeft=UDim.new(0,10),PaddingRight=UDim.new(0,8)},b)
-					if multi then
-						mk("TextLabel",{Size=UDim2.new(0,16,1,0),Position=UDim2.new(1,-18,0,0),BackgroundTransparency=1,Text=is and "✔" or "",Font=F.bold,TextSize=11,TextColor3=T.ok,TextXAlignment=Enum.TextXAlignment.Center,ZIndex=903},b)
-					end
-					b.MouseButton1Click:Connect(function()
-						if multi then
-							if is then
-								for k,v in ipairs(sel) do if v==opt.value then table.remove(sel,k) break end end
-							else
-								table.insert(sel,opt.value)
-							end
-							draw()
-							if o.Callback then pcall(o.Callback,sel) end
-							closeL()
-						else
-							sel={tostring(opt.value)}
-							draw()
-							if o.Callback then pcall(o.Callback,opt.value) end
-							closeL()
-						end
-					end)
-				end
-				cl.MouseButton1Click:Connect(function()
-					if open then closeL() return end
-					-- toạ độ TUYỆT ĐỐI so với overlay -> không lệch vì inset/scale
-					local base=Vector2.new(0,0)
-					local rPos,rSize=Vector2.new(0,0),Vector2.new(180,32)
-					pcall(function()
-						base=Vector2.new(overlay.AbsolutePosition.X,overlay.AbsolutePosition.Y)
-						rPos=Vector2.new(row.AbsolutePosition.X,row.AbsolutePosition.Y)
-						rSize=Vector2.new(row.AbsoluteSize.X,row.AbsoluteSize.Y)
-					end)
-					pcall(refreshVP)
-					local vX,vY=tonumber(vp.X) or 1280,tonumber(vp.Y) or 720
-					local h=math.clamp(#nd*30+14,44,200)
-					local lw=math.max(rSize.X,180)
-					local lx=math.clamp(rPos.X-base.X,4,math.max(4,vX-lw-4))
-					local ly=rPos.Y-base.Y+rSize.Y+4
-					if ly+h>vY-6 then ly=math.max(4,(rPos.Y-base.Y)-h-4) end
-					catcher=mk("TextButton",{Size=UDim2.new(1,0,1,0),BackgroundTransparency=1,Text="",AutoButtonColor=false,ZIndex=901,Parent=overlay})
-					open=mk("ScrollingFrame",{Name="SIKE_Dropdown",Size=UDim2.new(0,lw,0,h),Position=UDim2.new(0,lx,0,ly),BackgroundColor3=T.bg1,BorderSizePixel=0,ScrollBarThickness=3,ScrollBarImageColor3=T.border3,CanvasSize=UDim2.new(0,0,0,0),AutomaticCanvasSize=Enum.AutomaticSize.Y,ElasticBehavior=Enum.ElasticBehavior.Never,ZIndex=902,Parent=overlay})
-					pcall(function() local us=mk("UIScale",{Scale=curScale or 1},open)
-						if curScale~=1 then
-							open.Size=UDim2.new(0,lw/curScale,0,h/curScale)
-							open.Position=UDim2.new(0,lx,0,ly)
-						end
-					end)
-					corner(open,8)
-					stroke(open,T.border3,1,0.2)
-					mk("UIListLayout",{Padding=UDim.new(0,2),SortOrder=Enum.SortOrder.LayoutOrder},open)
-					mk("UIPadding",{PaddingTop=UDim.new(0,6),PaddingBottom=UDim.new(0,6),PaddingLeft=UDim.new(0,6),PaddingRight=UDim.new(0,6)},open)
-					for i,opt in ipairs(nd) do makeRow(i,opt) end
-					catcher.MouseButton1Click:Connect(closeL)
-				end)
-				draw()
-				local obj={frame=w,Parent=w}
-				obj.Clear=function(self)
-					sel={}
-					draw()
-					if open then closeL() end
-				end
-				obj.SetValue=function(self,v) pick(v) draw() end
-				obj.Get=function() return (#sel<=1) and (sel[1] or nil) or sel end
-				obj.Refresh=function(self,list,defs)
-					nd={}
-					for _,e in ipairs(list or {}) do table.insert(nd,norm(e)) end
-					if defs~=nil then pick(defs) end
-					draw()
-					if open then closeL() end
-				end
-				return obj
-			end
-
-			function sec:AddInput(o)
-				o=o or {}
-				local w=glass(bodyF,{Size=UDim2.new(1,0,0,IS_MOBILE and 74 or 66),BackgroundColor3=T.bg2,BackgroundTransparency=0.15,BorderSizePixel=0,LayoutOrder=nxt()},12)
-				mk("TextLabel",{Size=UDim2.new(1,-160,0,18),Position=UDim2.new(0,16,0,12),BackgroundTransparency=1,Text=tostring(o.Title or ""),Font=F.bold,TextSize=13,TextColor3=T.text,TextXAlignment=Enum.TextXAlignment.Left,TextTruncate=Enum.TextTruncate.AtEnd},w)
-				if o.Content and o.Content~="" then
-					mk("TextLabel",{Size=UDim2.new(1,-160,0,14),Position=UDim2.new(0,16,0,32),BackgroundTransparency=1,Text=tostring(o.Content),Font=F.reg,TextSize=11,TextColor3=T.textDim,TextXAlignment=Enum.TextXAlignment.Left,TextTruncate=Enum.TextTruncate.AtEnd},w)
-				end
-				local box=mk("Frame",{Size=UDim2.new(0,132,0,32),Position=UDim2.new(1,-148,0.5,-16),BackgroundColor3=T.bg3,BorderSizePixel=0,ZIndex=3,Parent=w})
-				corner(box,8)
-				local bs=stroke(box,T.border2,1,0.4)
-				local tb=mk("TextBox",{Size=UDim2.new(1,-16,1,0),Position=UDim2.new(0,8,0,0),BackgroundTransparency=1,Text=tostring(o.Default or ""),PlaceholderText=tostring(o.Content or "nhập..."),PlaceholderColor3=T.textFaint,Font=F.mono,TextSize=12,TextColor3=T.accentHot,TextXAlignment=Enum.TextXAlignment.Left,ClearTextOnFocus=false,ZIndex=4,Parent=box})
-				local function submit()
-					tw(bs,0.15,{Color=T.border2})
-					if o.Callback then pcall(o.Callback,tb.Text) end
-				end
-				tb.Focused:Connect(function() tw(bs,0.15,{Color=T.accent}) end)
-				tb.FocusLost:Connect(submit)
-				tb.ReturnPressedFromOnScreenKeyboard:Connect(submit)
-				return {frame=w,box=tb,Parent=w,Get=function() return tb.Text end,Set=function(self,v) tb.Text=tostring(v) end}
-			end
-
-			function sec:AddSeperator(names)
-				local list=names
-				if type(names)=="string" then list={names} end
-				for _,txt in ipairs(list or {}) do
-					local w=mk("Frame",{Size=UDim2.new(1,0,0,22),BackgroundTransparency=1,LayoutOrder=nxt(),Parent=bodyF})
-					mk("TextLabel",{Size=UDim2.new(1,0,0,15),BackgroundTransparency=1,Text=string.upper(tostring(txt)),Font=F.bold,TextSize=10,TextColor3=T.textFaint,TextXAlignment=Enum.TextXAlignment.Left,ZIndex=3},w)
-					local b=mk("Frame",{Size=UDim2.new(0,16,0,2),Position=UDim2.new(0,0,0,18),BackgroundColor3=T.violet,BorderSizePixel=0,ZIndex=3,Parent=w})
-					corner(b,1)
-				end
-				return {frame=bodyF,Parent=bodyF}
-			end
-
-			function sec:AddLine()
-				local w=mk("Frame",{Size=UDim2.new(1,0,0,1),BackgroundColor3=T.border,BorderSizePixel=0,LayoutOrder=nxt(),Parent=bodyF})
-				return w
-			end
-
-			function sec:AddParagraph(o)
-				o=o or {}
-				local function read(t)
-					if type(t)~="table" then return "","" end
-					if t[1]~=nil then return tostring(t[1]),tostring(t[2] or "") end
-					return tostring(t.Title or ""),tostring(t.Content or "")
-				end
-				local w=glass(bodyF,{Size=UDim2.new(1,0,0,0),AutomaticSize=Enum.AutomaticSize.Y,BackgroundColor3=T.bg2,BackgroundTransparency=0.15,BorderSizePixel=0,LayoutOrder=nxt()},12)
-				mk("UIPadding",{PaddingTop=UDim.new(0,12),PaddingBottom=UDim.new(0,12),PaddingLeft=UDim.new(0,16),PaddingRight=UDim.new(0,16)},w)
-				mk("UIListLayout",{Padding=UDim.new(0,4),SortOrder=Enum.SortOrder.LayoutOrder},w)
-				local tl,cl=read(o)
-				local title=mk("TextLabel",{Size=UDim2.new(1,0,0,16),BackgroundTransparency=1,Text=tl,Font=F.bold,TextSize=12,TextColor3=T.text,TextXAlignment=Enum.TextXAlignment.Left,LayoutOrder=1,ZIndex=3},w)
-				local content=mk("TextLabel",{Size=UDim2.new(1,0,0,0),AutomaticSize=Enum.AutomaticSize.Y,BackgroundTransparency=1,Text=cl,Font=F.reg,TextSize=11,TextColor3=T.textDim,TextWrapped=true,TextXAlignment=Enum.TextXAlignment.Left,TextYAlignment=Enum.TextYAlignment.Top,LayoutOrder=2,ZIndex=3},w)
-				local obj={frame=w,Parent=w}
-				obj.Set=function(self,t)
-					local a,b=read(t)
-					if a~="" then title.Text=a end
-					content.Text=b
-				end
-				return obj
-			end
-			for _,mn in ipairs({"AddToggle","AddButton","AddDropdown","AddInput","AddSeperator","AddLine","AddParagraph"}) do
-				local real=sec[mn]
-				sec[mn]=function(self,...)
-					LOG.widgets=LOG.widgets+1
-					local ok,r=pcall(real,self,...)
-					if not ok then LOG.err(mn,r) return nullObj() end
-					return r
-				end
-			end
-			sec.Parent=bodyF
-			return sec
-		end
-
-		local win={}
-		local function buildTab(o)
-			o=o or {}
-			local i=#tabs+1
-			local name=tostring(o.Name or ("Tab "..i))
-			local page=mk("Frame",{Name=name,Size=UDim2.new(1,0,1,0),BackgroundTransparency=1,Visible=false,ZIndex=3,Parent=pageHolder})
-			local scroll=mk("ScrollingFrame",{Size=UDim2.new(1,-18,1,-18),Position=UDim2.new(0,9,0,9),BackgroundTransparency=1,BorderSizePixel=0,ScrollBarThickness=3,ScrollBarImageColor3=T.border3,ScrollBarImageTransparency=0.3,CanvasSize=UDim2.new(0,0,0,0),AutomaticCanvasSize=Enum.AutomaticSize.Y,ElasticBehavior=Enum.ElasticBehavior.Never,ZIndex=4,Parent=page})
-			mk("UIListLayout",{Padding=UDim.new(0,12),SortOrder=Enum.SortOrder.LayoutOrder},scroll)
-			local btn=mk("TextButton",{Size=UDim2.new(1,0,0,34),BackgroundColor3=T.bg2,BackgroundTransparency=0.5,BorderSizePixel=0,Text="",AutoButtonColor=false,LayoutOrder=i,ZIndex=4,Parent=sidebar})
-			corner(btn,9)
-			local ind=mk("Frame",{Size=UDim2.new(0,3,0,16),Position=UDim2.new(0,6,0.5,-8),BackgroundColor3=T.accent,BorderSizePixel=0,Visible=false,ZIndex=5,Parent=btn})
-			corner(ind,2)
-			local icon=nil
-			if o.Icon and o.Icon~="" then
-				icon=mk("ImageLabel",{Size=UDim2.new(0,16,0,16),Position=UDim2.new(0,16,0.5,-8),BackgroundTransparency=1,Image=tostring(o.Icon),ImageColor3=T.textDim,ZIndex=5,Parent=btn})
-			end
-			local lbl=mk("TextLabel",{Size=UDim2.new(1,-46,1,0),Position=UDim2.new(0,icon and 38 or 18,0,0),BackgroundTransparency=1,Text=name,Font=F.med,TextSize=12,TextColor3=T.textDim,TextXAlignment=Enum.TextXAlignment.Left,TextTruncate=Enum.TextTruncate.AtEnd,ZIndex=5},btn)
-			btn.MouseEnter:Connect(function() if current~=i then tw(btn,0.15,{BackgroundColor3=T.bg3}) end end)
-			btn.MouseLeave:Connect(function() if current~=i then tw(btn,0.15,{BackgroundColor3=T.bg2}) end end)
-			btn.MouseButton1Click:Connect(function() setTab(i) end)
-			tabs[i]={page=page,scroll=scroll,btn=btn,ind=ind,lbl=lbl,icon=icon}
-			tabsBtn[i]=scroll
-			local tab={}
-			local so=0
-			function tab:AddSection(name,open)
-				so=so+1
-				LOG.sections=LOG.sections+1
-				local ok,r=pcall(newSection,scroll,so,name)
-				if not ok then LOG.err("AddSection",r) return nullObj() end
-				return r
-			end
-			tab.Parent=page
-			LOG.tabs=LOG.tabs+1
-			if i==1 then setTab(1) end
-			return tab
-		end
-
-		function win:CreateTab(o)
-			local ok,res=pcall(buildTab,o)
-			if not ok then
-				LOG.err("CreateTab["..tostring(o and o.Name).."]",res)
-				return {Parent=nil,AddSection=function() return nullObj() end}
-			end
-			return res
-		end
-
-		-- ===== tự căn vừa mọi màn hình (mobile / tablet / PC) =====
-		local curScale=1
-		local uiScale=mk("UIScale",{Scale=1},main)
-		local function fit()
-			pcall(refreshVP)
-			local vX,vY=tonumber(vp.X) or 1280,tonumber(vp.Y) or 720
-			local sx=(vX-12)/W
-			local sy=(vY-12)/H
-			local s=math.clamp(math.min(1,sx,sy),0.42,1)
-			uiScale.Scale=s
-			curScale=s
-			-- giữ trong màn hình sau khi scale
-			local wS,hS=W*s,H*s
-			local px=math.clamp(main.Position.X.Offset,-(vX-wS)/2,(vX-wS)/2)
-			local pz=math.clamp(main.Position.Y.Offset,-(vY-hS)/2,(vY-hS)/2)
-			main.Position=UDim2.new(0.5,px,0.5,pz)
-		end
-		fit()
-		pcall(function()
-			local cam=game:GetService("Workspace").CurrentCamera
-			if cam then
-				cam:GetPropertyChangedSignal("ViewportSize"):Connect(function() pcall(fit) end)
-			end
-		end)
-
-		-- kéo thả
-		do
-			local dragging,dStart,sStart=false,nil,nil
-			header.InputBegan:Connect(function(inp)
-				if inp.UserInputType==Enum.UserInputType.MouseButton1 or inp.UserInputType==Enum.UserInputType.Touch then
-					dragging=true dStart=inp.Position sStart=main.Position
-				end
-			end)
-			UIS.InputChanged:Connect(function(inp)
-				if dragging and (inp.UserInputType==Enum.UserInputType.MouseMovement or inp.UserInputType==Enum.UserInputType.Touch) then
-					local d=inp.Position-dStart
-					main.Position=UDim2.new(sStart.X.Scale,sStart.X.Offset+d.X,sStart.Y.Scale,sStart.Y.Offset+d.Y)
-				end
-			end)
-			UIS.InputEnded:Connect(function(inp)
-				if inp.UserInputType==Enum.UserInputType.MouseButton1 or inp.UserInputType==Enum.UserInputType.Touch then dragging=false end
-			end)
-		end
-
-		local minimized=false
-		minBtn.MouseButton1Click:Connect(function()
-			minimized=not minimized
-			body.Visible=not minimized
-			tw(main,0.3,{Size=minimized and UDim2.new(0,W,0,64) or UDim2.new(0,W,0,H)},Enum.EasingStyle.Quint)
-			minBtn.Text=minimized and "+" or "—"
-		end)
-		minBtn.MouseEnter:Connect(function() tw(minBtn,0.15,{BackgroundColor3=T.bg4}) end)
-		minBtn.MouseLeave:Connect(function() tw(minBtn,0.15,{BackgroundColor3=T.bg3}) end)
-		closeBtn.MouseEnter:Connect(function() tw(closeBtn,0.15,{BackgroundColor3=T.dangerDim}) end)
-		closeBtn.MouseLeave:Connect(function() tw(closeBtn,0.15,{BackgroundColor3=T.bg3}) end)
-		closeBtn.MouseButton1Click:Connect(function()
-			UI.Unloaded=true
-			pcall(function() if sg then sg:Destroy() end end)
-			print("[SIKE HUB] unloaded")
-		end)
-		UIS.InputBegan:Connect(function(inp,gpe)
-			if gpe then return end
-			if inp.KeyCode==Enum.KeyCode.RightShift then
-				main.Visible=not main.Visible
-			end
-		end)
-
-		task.spawn(function()
-			while sg and sg.Parent and not UI.Unloaded do
-				pillDot.BackgroundColor3=UI.Unloaded and T.danger or T.ok
-				task.wait(0.5)
-			end
-		end)
-		pcall(function() pillDot.BackgroundColor3=T.ok pillText.Text="READY" end)
-		task.delay(2,function()
-			pcall(function()
-				print(string.format("[SIKE HUB] UI: %d tab | %d section | %d widget | %d loi",LOG.tabs,LOG.sections,LOG.widgets,#LOG.errors))
-				for i=1,math.min(#LOG.errors,10) do print("  [SIKE UI] loi "..i..": "..LOG.errors[i]) end
-				if #LOG.errors>0 then
-					pillDot.BackgroundColor3=T.warn
-					pillText.Text="WARN "..#LOG.errors
-				end
-			end)
-		end)
-		return win
-	end
-
-	return UI
-end)()
-
---// ============================================================
---//  SIKE FUNCS — lớp bọc API cho UI (Toggle/Button/Dropdown/Textbox)
---//  Toggle / Button / Dropdown / Textbox / SetTable
---// ============================================================
-SIKE_FUNCS = (function()
-	local Funcs = {}
-	local SaveConfig = {}
-	local function checker(v, t, d)
-		if typeof(v) == t then return v end
-		return d
-	end
-	function Funcs:SetTable(path)
-		if type(path) == "table" then SaveConfig = path end
-	end
-	function Funcs:Toggle(Tab, Name, Content, Default, Callback)
-		Name = checker(Name, "string", tostring(Name))
-		Content = checker(Content, "string", tostring(Content))
-		Callback = checker(Callback, "function", function() end)
-		local def
-		if Default == "Save" then
-			def = checker(SaveConfig[Name], "boolean", false)
-		else
-			def = checker(Default, "boolean", false)
-		end
-		return Tab:AddToggle({ Title = Name, Content = Content, Default = def, Callback = Callback })
-	end
-	function Funcs:Button(Tab, Name, Content, Callback)
-		Name = checker(Name, "string", tostring(Name))
-		Content = checker(Content, "string", tostring(Content))
-		Callback = checker(Callback, "function", function() end)
-		return Tab:AddButton({ Title = Name, Content = Content, Callback = Callback })
-	end
-	function Funcs:Dropdown(Tab, Name, Content, multi, options, Default, Callback)
-		Name = checker(Name, "string", tostring(Name))
-		Content = checker(Content, "string", tostring(Content))
-		multi = checker(multi, "boolean", false)
-		options = checker(options, "table", { "" })
-		Callback = checker(Callback, "function", function() end)
-		local def
-		if Default == "Save" then
-			if type(SaveConfig[Name]) == "table" then
-				def = SaveConfig[Name]
-			else
-				def = { SaveConfig[Name] or "" }
-			end
-		else
-			if type(Default) == "table" then
-				def = Default
-			else
-				def = { Default or "" }
-			end
-		end
-		return Tab:AddDropdown({ Title = Name, Content = Content, Multi = multi, Options = options, Default = def, Callback = Callback })
-	end
-	function Funcs:Textbox(Tab, Name, Content, Default, Callback)
-		Name = checker(Name, "string", tostring(Name))
-		Content = checker(Content, "string", tostring(Content))
-		Callback = checker(Callback, "function", function() end)
-		local def
-		if Default == "Save" then
-			def = checker(SaveConfig[Name], "string", "")
-		else
-			def = checker(Default, "string", "")
-		end
-		return Tab:AddInput({ Title = Name, Content = Content, Default = def, Callback = Callback })
-	end
-	return Funcs
-end)()
-
-
---// ============================================================
---//  [3] SCRIPT CHÍNH · BLOX FRUITS (UI = SIKE HUB)
---// ============================================================
-
 repeat
 	task.wait()
 until game:IsLoaded()
@@ -1175,48 +511,46 @@ local function fn2()
 		_G = _G,
 	}
 
-	local lua, v7 = (function()
-			return SIKE_UI
-		end), nil
+	local lua, v7 = v6.load("https://raw.githubusercontent.com/AhmadV99/Main/refs/heads/main/Library/Lib_5.5.0.lua")
 
 	if not lua then
-		warn("[SIKE HUB] load library loi: " .. tostring(v7))
-		lua = function() return SIKE_UI end
+		error("Failed to load library: " .. tostring(v7))
 	end
 
-	local FuncsV3, v8 = (function()
-			return SIKE_FUNCS
-		end), nil
+	local FuncsV3, v8 = v6.load("https://raw.githubusercontent.com/AhmadV99/Main/main/Library/Example/FuncsV3")
 
 	if not FuncsV3 then
-		warn("[SIKE HUB] load funcs loi: " .. tostring(v8))
-		FuncsV3 = function() return SIKE_FUNCS end
+		error("Failed to load functions: " .. tostring(v8))
 	end
 
 	local ok, result = pcall(lua)
 
-	if not ok or type(result) ~= "table" then
-		warn("[SIKE HUB] UI lib loi: " .. tostring(result))
-		pcall(function()
-			game:GetService("StarterGui"):SetCore("SendNotification", { Title = "SIKE HUB", Text = "UI lib loi, dung ban du phong: " .. tostring(result), Duration = 15 })
-		end)
-		result = SIKE_UI
+	if not ok then
+		error("Library execution failed: " .. tostring(result))
 	end
 
 	local ok2, result2 = pcall(FuncsV3)
 
-	if not ok2 or type(result2) ~= "table" then
-		warn("[SIKE HUB] Funcs loi: " .. tostring(result2))
-		result2 = SIKE_FUNCS
+	if not ok2 then
+		error("Functions execution failed: " .. tostring(result2))
 	end
 
 	local v9 = result
 
 	local v10 = v9:CreateWindow({
-		Title = "SIKE HUB",
-		Description = "BLOX FRUITS",
+		Title = "Sike Hub",
+		Description = "",
 		["Tab Width"] = 150,
-		SaveSystem = { Enable = true, File = "SikeHub" },
+		SaveSystem = { Enable = true, File = "Blox Fruits" },
+		Key = "KZgN0t5pK6hBaqVLAMLg27aqXNDb8v",
+		Key1 = "c9RkyXAjNpJc9u1fexvw1cbxYTWvMy",
+		Key2 = "Xp8712WzbaRn8EtrLnXk8gDdzQB8jF",
+		Key3 = "wixUQtibEtmkTQ7WpSFGq4YfBuqJQy",
+		Key4 = "KbSf6UWZ6vndbgp8Vh9EHdM0dU8DFf",
+		Key5 = "mP3tTRKYwhNKLkpFCdVuj922xqTgJp",
+		Key6 = "heMGEmHXFUaiTaStAihwTfwgSJguUwQQxdE",
+		Key7 = "khEXYXSHSJpDabFqudKJWEWbEyzXYgLmgTF",
+		Key8 = "MLGkWCxxHaqhumMpSmpvJMuiUEpeqUAYvxN",
 	})
 
 	local tbl3 = { __tabs = {}, __lock = false }
@@ -1278,16 +612,15 @@ local function fn2()
 		Net = nil,
 	}
 
-	pcall(function() tbl6.CommF_ = tbl6.Remotes:WaitForChild("CommF_") end)
-	pcall(function() tbl6.Net = tbl6.Modules:WaitForChild("Net") end)
+	tbl6.CommF_ = tbl6.Remotes:WaitForChild("CommF_")
+	tbl6.Net = tbl6.Modules:WaitForChild("Net")
 
-	local tbl7 = {}
-	pcall(function()
-		tbl7.RegisterAttack = tbl6.Net:WaitForChild("RE/RegisterAttack")
-		tbl7.RegisterHit = tbl6.Net:WaitForChild("RE/RegisterHit")
-		tbl7.ReceivedHit = tbl6.Net:WaitForChild("RE/ReceivedHit")
-		tbl7.ShootGunEvent = tbl6.Net:WaitForChild("RE/ShootGunEvent")
-	end)
+	local tbl7 = {
+		RegisterAttack = tbl6.Net:WaitForChild("RE/RegisterAttack"),
+		RegisterHit = tbl6.Net:WaitForChild("RE/RegisterHit"),
+		ReceivedHit = tbl6.Net:WaitForChild("RE/ReceivedHit"),
+		ShootGunEvent = tbl6.Net:WaitForChild("RE/ShootGunEvent"),
+	}
 
 	local placeId = game.PlaceId
 
@@ -1436,15 +769,12 @@ local function fn2()
 		"Dough",
 	}
 
-	local ItemReplicationService, KEYS, ItemId, ItemConfig, RarityUtil, PriceService
-	pcall(function()
-		ItemReplicationService = require(tbl5.ReplicatedStorage.ItemReplicationService)
-		KEYS = require(tbl5.ReplicatedStorage.ItemReplicationService.KEYS)
-		ItemId = require(tbl5.ReplicatedStorage.Economy.ItemId)
-		ItemConfig = require(tbl5.ReplicatedStorage.ItemConfig)
-		RarityUtil = require(tbl5.ReplicatedStorage.Modules.Asset.RarityUtil)
-		PriceService = require(tbl5.ReplicatedStorage.PriceService)
-	end)
+	local ItemReplicationService = require(tbl5.ReplicatedStorage.ItemReplicationService)
+	local KEYS = require(tbl5.ReplicatedStorage.ItemReplicationService.KEYS)
+	local ItemId = require(tbl5.ReplicatedStorage.Economy.ItemId)
+	local ItemConfig = require(tbl5.ReplicatedStorage.ItemConfig)
+	local RarityUtil = require(tbl5.ReplicatedStorage.Modules.Asset.RarityUtil)
+	local PriceService = require(tbl5.ReplicatedStorage.PriceService)
 
 	local tbl13 = {
 		Moveset = "Melee",
@@ -1565,7 +895,7 @@ local function fn2()
 	end
 
 	local tbl14 = {}
-	local str = "SIKE_HUB/SikeConfig.json"
+	local str = "SpeedHubX/BloxFruit_V5.json"
 	local tbl15 = {}
 	local n = 0
 	local n2 = 0.5
@@ -1589,8 +919,8 @@ local function fn2()
 					local json = tbl5.HttpService:JSONEncode(tbl14)
 
 					if writefile and isfolder and makefolder then
-						if not isfolder("SIKE_HUB") then
-							makefolder("SIKE_HUB")
+						if not isfolder("SpeedHubX") then
+							makefolder("SpeedHubX")
 						end
 
 						writefile(str, json)
@@ -2382,7 +1712,7 @@ local function fn2()
 					local setNotification = v20.SetNotification
 					local tbl23 = {}
 					local str2 = "JobId: " .. tostring(arg4) .. " | Boss: " .. tostring(arg3)
-					tbl23[1] = "SIKE HUB"
+					tbl23[1] = "Speed Hub X"
 					tbl23[2] = "Hop Boss"
 					tbl23[3] = str2
 					tbl23[4] = 5
@@ -3622,7 +2952,7 @@ local function fn2()
 		end
 
 		if v19 and not table.find(tbl27, v19.Name) then
-			v9:SetNotification({ "SIKE HUB", "Auto V3", "Killed: " .. v19.Name, 5, 0.5 })
+			v9:SetNotification({ "Speed Hub X", "Auto V3", "Killed: " .. v19.Name, 5, 0.5 })
 			table.insert(tbl27, v19.Name)
 		end
 	end
@@ -3759,15 +3089,15 @@ local function fn2()
 				if tostring(data and data.Value) ~= "Skypiea" then
 					if not table.find(tbl29, player.Name) then
 						table.insert(tbl29, player.Name)
-						v9:SetNotification({ "SIKE HUB", "Auto V3", "Blacklisted: " .. player.Name, 5, 0.5 })
+						v9:SetNotification({ "Speed Hub X", "Auto V3", "Blacklisted: " .. player.Name, 5, 0.5 })
 					end
 
 					if #players - 2 <= #tbl29 then
-						v9:SetNotification({ "SIKE HUB", "Auto V3", "No Skypiea Players Found | Server Hopping", 5, 0.5 })
+						v9:SetNotification({ "Speed Hub X", "Auto V3", "No Skypiea Players Found | Server Hopping", 5, 0.5 })
 						tbl18:ServerHop("Singapore", 10)
 					end
 				elseif not table.find(tbl28, player.Name) then
-					v9:SetNotification({ "SIKE HUB", "Auto V3", "Target: " .. player.Name, 5, 0.5 })
+					v9:SetNotification({ "Speed Hub X", "Auto V3", "Target: " .. player.Name, 5, 0.5 })
 					local character = player.Character
 					character = character and character:FindFirstChild("HumanoidRootPart")
 					local humanoid = player:FindFirstChildOfClass("Humanoid")
@@ -3789,7 +3119,7 @@ local function fn2()
 					end
 				else
 					v9:SetNotification({
-						"SIKE HUB",
+						"Speed Hub X",
 						"Auto V3",
 						"Skipped: " .. player.Name .. " | Reason: " .. (tbl18:CheckRecentDeath() and "Dead Recent" or "Unknown"),
 						5,
@@ -3904,16 +3234,14 @@ local function fn2()
 	end
 
 	local tbl30 = {}
-	pcall(function()
-		local v19 = next
-		local response, v20 = tbl5.ReplicatedStorage:WaitForChild("Remotes").CommF_:InvokeServer("GetFruits")
-		if type(response) ~= "table" then return end
-		for _, v21 in v19, response, v20 do
-			if type(v21) == "table" and tonumber(v21.Price) and v21.Price >= 1000000 then
-				tbl30[v21.Name] = v21.Price
-			end
+	local v19 = next
+	local response, v20 = tbl5.ReplicatedStorage:WaitForChild("Remotes").CommF_:InvokeServer("GetFruits")
+
+	for _, v21 in v19, response, v20 do
+		if v21.Price >= 1000000 then
+			tbl30[v21.Name] = v21.Price
 		end
-	end)
+	end
 
 	tbl18.GetFruitInventory = function(arg, arg2)
 		local flag = arg2 or true
@@ -4025,7 +3353,7 @@ local function fn2()
 	end
 
 	tbl18.CreateESP = function(arg, arg2, textColor3)
-		if not arg2 or arg2:FindFirstChild("SIKE_HUB_ESP") then
+		if not arg2 or arg2:FindFirstChild("SpeedHubX_ESP") then
 			return
 		end
 		local primaryPart = arg2
@@ -4040,11 +3368,11 @@ local function fn2()
 		end
 
 		local folder = Instance.new("Folder")
-		folder.Name = "SIKE_HUB_ESP"
+		folder.Name = "SpeedHubX_ESP"
 		folder.Parent = primaryPart
 		local boxHandleAdornment = Instance.new("BoxHandleAdornment")
 		boxHandleAdornment.Size = Vector3.new(1, 0, 1)
-		boxHandleAdornment.Name = "SIKE_HUB_ESP"
+		boxHandleAdornment.Name = "SpeedHubX_ESP"
 		boxHandleAdornment.AlwaysOnTop = true
 		boxHandleAdornment.ZIndex = 10
 		boxHandleAdornment.Transparency = 0
@@ -4094,8 +3422,8 @@ local function fn2()
 	end
 
 	tbl18.RemoveESP = function(arg, arg2)
-		if arg2 and arg2:FindFirstChild("SIKE_HUB_ESP") then
-			arg2.SIKE_HUB_ESP:Destroy()
+		if arg2 and arg2:FindFirstChild("SpeedHubX_ESP") then
+			arg2.SpeedHubX_ESP:Destroy()
 		end
 	end
 
@@ -4587,7 +3915,7 @@ local function fn2()
 			local v28 = tbl18:converttoTable(v27.id)
 			tbl18:smartBossTeleport({ tbl33, tbl34, tbl35 }, chooseBoss2, v28[2], v28[1])
 		else
-			v9:SetNotification({ "SIKE HUB", "Hop Boss", "No server with boss found", 5, 0.5 })
+			v9:SetNotification({ "Speed Hub X", "Hop Boss", "No server with boss found", 5, 0.5 })
 		end
 	end)
 
@@ -6396,7 +5724,7 @@ local function fn2()
 	local Fruits = v16:AddSection("Fruits")
 	Fruits:AddSeperator({ "Fruit Sniper" })
 	local tbl36 = {}
-	pcall(function() tbl6.CommF_:InvokeServer("GetFruits") end)
+	tbl6.CommF_:InvokeServer("GetFruits")
 	local response2
 
 	while true do
@@ -6828,7 +6156,7 @@ local function fn2()
 					end
 				end
 			else
-				v9:SetNotification({ "SIKE HUB", "Auto V2", "Your race is already V2 or higher", 5, 0.5 })
+				v9:SetNotification({ "Muhaimin Hub", "Auto V2", "Your race is already V2 or higher", 5, 0.5 })
 			end
 		end)
 
@@ -6855,7 +6183,7 @@ local function fn2()
 					tbl18:HandleFishmanV2()
 				end
 			elseif response3 == -1 then
-				v9:SetNotification({ "SIKE HUB", 5, 0.5 })
+				v9:SetNotification({ "Muhaimin Fail English", 5, 0.5 })
 			end
 		end)
 	end)
@@ -7472,7 +6800,7 @@ local function fn2()
 	end)
 
 	result2:Button(v18:AddSection("Reset Config"), "Reset Script Config", "Delete all saved configuration", function()
-		for _, v55 in next, { "SIKE_HUB" }, nil do
+		for _, v55 in next, { "Muhaimin Hub", "Muhaimin Hub", "Muhaimin Hub", "Muhaimin Hub", "Muhaimin Hub" }, nil do
 			if isfolder(v55) then
 				delfolder(v55)
 			end
@@ -7482,20 +6810,12 @@ local function fn2()
 	local v55 = v9
 	local setNotification = v55.SetNotification
 	local tbl37 = {}
-	local str3 = "Loaded in " .. tostring(string.format("%.1f", tick() - now)) .. "s"
-	tbl37[1] = "SIKE HUB"
-	tbl37[2] = "BLOX FRUITS"
+	local str3 = "Welcome Muhaimin Loading..: " .. tostring(tick() - now) .. "s"
+	tbl37[1] = "Muhaimin Likes to Hack"
+	tbl37[2] = ""
 	tbl37[3] = str3
 	tbl37[4] = 5
 	tbl37[5] = 0.5
 	setNotification(v55, tbl37)
 end
-task.spawn(function()
-	local okRun, errRun = pcall(fn2)
-	if not okRun then
-		warn("[SIKE HUB] LOI SCRIPT: " .. tostring(errRun))
-		pcall(function()
-			game:GetService("StarterGui"):SetCore("SendNotification", { Title = "SIKE HUB - LOI SCRIPT", Text = tostring(errRun), Duration = 25 })
-		end)
-	end
-end)
+task.spawn(fn2)
