@@ -1,0 +1,2324 @@
+// ==UserScript==
+// @name         MINH PHUONG AUTO GTRAFFIC.IO v46.3.4
+// @namespace    minhphuong.gtraffic
+// @version      46.3.4
+// @description  Auto gtraffic.io - Click LAY LINK ngay khi hien
+// @author       MINH PHƯƠNG
+// @match        *://*/*
+// @grant        GM_setValue
+// @grant        GM_getValue
+// @grant        GM_deleteValue
+// @grant        GM_addStyle
+// @grant        GM_setClipboard
+// @run-at       document-start
+// ==/UserScript==
+
+(function () {
+    'use strict';
+
+    var HOST = location.hostname;
+    var IS_TOP = (window === window.top);
+    var isGtraffic = /(^|\.)gtraffic\.io$/i.test(HOST);
+    var isGoogle = /(^|\.)google\./i.test(HOST);
+
+    var CFG = {
+        poll: 200, googlePoll: 8, targetPoll: 200, gk: 'mpgt_',
+        watchdogMs: 6000, defaultCountdown: 60, codeTimeoutMs: 90000,
+        navCooldownMs: 5000, fillRetryMax: 999, fillRetryDelay: 800, backDelay: 5000,
+        leaveCheckMs: 500,
+        fillLoopMax: 999,
+        fillLoopDelay: 250,
+        fillHoldVerifyMs: 800,
+        fillVerifyIntervalMs: 60,
+        maxEmptyBeforeNop: 5,
+        nativePasteDelayMin: 25,
+        nativePasteDelayMax: 90,
+        postSubmitCheckMs: 500,
+        postSubmitCheckMax: 8,
+        minCodeScore: 150,
+        maxCodeScanDistance: 99999,
+        getLinkPollMs: 5,
+        getLinkTimeoutMs: 30000,
+        minWaitBeforeSearchMs: 100
+    };
+
+    var STATE = {
+        IDLE: 'idle', GOOGLE_SEARCH: 'google-search', GOOGLE_CLICK: 'google-click',
+        SCAN_BTN: 'scan-btn', WAIT_COUNTDOWN: 'wait-countdown', GET_CODE: 'get-code',
+        BACK_GTRAFFIC: 'back-gtraffic', FILL_CODE: 'fill-code', DONE: 'done'
+    };
+
+    var S = {
+        get: function(k, d) { try { var v = GM_getValue(CFG.gk + k, d); return v === undefined ? d : v; } catch (e) { return d; } },
+        set: function(k, v) { try { GM_setValue(CFG.gk + k, v); } catch (e) {} },
+        del: function(k) { try { GM_deleteValue(CFG.gk + k); } catch (e) {} },
+        reset: function() {
+            var keys = ['state','stateSetAt','domain','keyword','gtrafficUrl','code','targetUrl','lastServerSec','lastClickTime','serverTotalSec','filled','confirmed','googleClickTries','codeFoundAt','navigatingBack','cdStartSec','cdStartAt','btnClickAt','gotCodeAt','codeAttempts','lastNavUrl','lastNavAt','backDone','leavingAt','lastCopyOk','lastCopyText','hardStop','countdownRealZero','getLinkClicked','waitingGetLink','getLinkDeadline','getLinkStartAt'];
+            for (var i = 0; i < keys.length; i++) S.del(keys[i]);
+        }
+    };
+
+    var DOMAINS = {
+        getList: function() {
+            try { var raw = S.get('savedDomains', '[]'); return typeof raw === 'string' ? JSON.parse(raw) : (raw || []); } catch (e) { return []; }
+        },
+        save: function(domain) {
+            var d = (domain || '').trim().toLowerCase().replace(/^https?:\/\//, '').replace(/\/.*$/, '');
+            if (!d) return false;
+            var list = DOMAINS.getList();
+            for (var i = 0; i < list.length; i++) if (list[i].d === d) return false;
+            list.unshift({ d: d, t: Date.now() });
+            if (list.length > 30) list.length = 30;
+            S.set('savedDomains', JSON.stringify(list)); return true;
+        },
+        remove: function(d) {
+            var list = DOMAINS.getList(); var out = [];
+            for (var i = 0; i < list.length; i++) if (list[i].d !== d) out.push(list[i]);
+            S.set('savedDomains', JSON.stringify(out));
+        }
+    };
+
+    function log() {
+        try { console.log.apply(console, arguments); } catch (e) {}
+    }
+    function sleep(ms) { return new Promise(function(r){ setTimeout(r, ms); }); }
+    function rand(min, max) { return Math.floor(Math.random() * (max - min + 1)) + min; }
+    function getState() { return S.get('state', STATE.IDLE); }
+    function setState(s) {
+        var old = getState();
+        if (old === s) return;
+        S.set('state', s);
+        S.set('stateSetAt', Date.now().toString());
+        log('STATE: ' + old + ' -> ' + s);
+        if (IS_TOP && UI && UI.status) refreshStatus();
+    }
+
+    function safeNavigate(url) {
+        if (!url) return;
+        var lastUrl = S.get('lastNavUrl', '');
+        var lastAt = parseInt(S.get('lastNavAt', '0'), 10);
+        var now = Date.now();
+        if (lastUrl === url && (now - lastAt) < CFG.navCooldownMs) { log('CHAN NAV'); return; }
+        S.set('lastNavUrl', url);
+        S.set('lastNavAt', now.toString());
+        log('NAV -> ' + url);
+        try { location.href = url; } catch (e) {}
+    }
+
+    function isTargetPage() {
+        var t = S.get('targetUrl'); var curDomain = S.get('domain');
+        var ch = HOST.replace(/^www\./, '');
+        if (curDomain) {
+            var cd = curDomain.toLowerCase().replace(/^www\./, '').replace(/^https?:\/\//, '').replace(/\/.*$/, '');
+            if (ch.indexOf(cd) !== -1 || cd.indexOf(ch) !== -1) return true;
+        }
+        if (!t) return false;
+        try { var th = new URL(t).hostname.replace(/^www\./, ''); if (ch.indexOf(th) !== -1 || ch.indexOf(ch) !== -1) return true; } catch (e) {}
+        return false;
+    }
+    function isRealTargetPage() { return !isGtraffic && !isGoogle && isTargetPage(); }
+
+    function getTopHostname() {
+        try { if (window.top && window.top.location && window.top.location.hostname) return window.top.location.hostname; } catch (e) {}
+        return HOST;
+    }
+    function getBaseDomain(host) {
+        if (!host) return '';
+        host = host.replace(/^www\./, '').toLowerCase();
+        var parts = host.split('.');
+        if (parts.length <= 2) return host;
+        var twoLevel = ['co.uk','co.jp','co.kr','com.au','co.nz','com.br','co.in','co.id','com.vn','com.cn','com.tw','com.hk','co.th','com.ph','com.my','com.sg'];
+        var last2 = parts.slice(-2).join('.');
+        if (twoLevel.indexOf(last2) !== -1 && parts.length >= 3) return parts.slice(-3).join('.');
+        return parts.slice(-2).join('.');
+    }
+    function isSameHostAsTop() {
+        try {
+            if (IS_TOP) return true;
+            var topHost = getTopHostname();
+            if (!topHost) return false;
+            return getBaseDomain(HOST) === getBaseDomain(topHost);
+        } catch (e) { return false; }
+    }
+    function shouldToolRunOnThisPage() {
+        if (IS_TOP) {
+            if (isGtraffic) return true;
+            if (isGoogle) return true;
+            if (isRealTargetPage()) return true;
+            return false;
+        }
+        if (isSameHostAsTop()) {
+            var topHost = getTopHostname();
+            var isGt = /(^|\.)gtraffic\.io$/i.test(topHost);
+            var isGg = /(^|\.)google\./i.test(topHost);
+            if (isGt || isGg) return true;
+            var curDomain = S.get('domain');
+            if (curDomain) {
+                var cd = curDomain.toLowerCase().replace(/^www\./, '').replace(/^https?:\/\//, '').replace(/\/.*$/, '');
+                var th = topHost.replace(/^www\./, '');
+                if (th.indexOf(cd) !== -1 || cd.indexOf(th) !== -1) return true;
+            }
+            return false;
+        }
+        return false;
+    }
+
+    if (!shouldToolRunOnThisPage()) return;
+
+    var loopRunning = false;
+    var stopRequested = false;
+    var fillRunning = false;
+    var fillDone = false;
+    var fillRetries = 0;
+    var codeShown = false;
+    var gtrafficCheckTimer = null;
+    var loopTimer = null;
+    var leaveCheckTimer = null;
+    var fillHoldTimer = null;
+    var googleObserver = null;
+    var wasOnValidPage = true;
+    var cachedInput = null, cachedInputTime = 0;
+    var cachedConfirm = null, cachedConfirmTime = 0;
+    var cachedBtn = null, cachedBtnTime = 0;
+    var getLinkPollTimer = null;
+    var getLinkObserver = null;
+    var getLinkClickDone = false;
+    var getLinkStartAt = 0;
+
+    function resetAllState(silent) {
+        if (!silent) log('AUTO RESET: roi 3 loai trang');
+        try {
+            S.del('code'); S.del('state'); S.del('domain'); S.del('keyword'); S.del('gtrafficUrl'); S.del('targetUrl');
+            S.del('lastClickTime'); S.del('serverTotalSec'); S.del('lastServerSec'); S.del('btnClickAt');
+            S.del('cdStartSec'); S.del('cdStartAt'); S.del('codeFoundAt'); S.del('gotCodeAt');
+            S.del('codeAttempts'); S.del('filled'); S.del('confirmed'); S.del('googleClickTries');
+            S.del('navigatingBack'); S.del('backDone'); S.del('lastNavUrl'); S.del('lastNavAt');
+            S.del('lastCopyOk'); S.del('lastCopyText'); S.del('hardStop'); S.del('countdownRealZero');
+            S.del('getLinkClicked'); S.del('waitingGetLink'); S.del('getLinkDeadline'); S.del('getLinkStartAt');
+        } catch (e) {}
+        stopRequested = true;
+        loopRunning = false;
+        fillRunning = false;
+        fillDone = false;
+        fillRetries = 0;
+        codeShown = false;
+        getLinkClickDone = false;
+        if (gtrafficCheckTimer) { try { clearInterval(gtrafficCheckTimer); } catch (e) {} gtrafficCheckTimer = null; }
+        if (loopTimer) { try { clearTimeout(loopTimer); } catch (e) {} loopTimer = null; }
+        if (fillHoldTimer) { try { clearTimeout(fillHoldTimer); } catch (e) {} fillHoldTimer = null; }
+        if (googleObserver) { try { googleObserver.disconnect(); } catch (e) {} googleObserver = null; }
+        if (getLinkPollTimer) { try { clearInterval(getLinkPollTimer); } catch (e) {} getLinkPollTimer = null; }
+        if (getLinkObserver) { try { getLinkObserver.disconnect(); } catch (e) {} getLinkObserver = null; }
+        if (UI && UI.root) UI.root.style.display = 'none';
+        var fab = document.getElementById('mp-fab'); if (fab) fab.remove();
+    }
+
+    function startLeaveDetector() {
+        if (!IS_TOP) return;
+        if (leaveCheckTimer) return;
+        log('START LEAVE DETECTOR (500ms)');
+        leaveCheckTimer = setInterval(function() {
+            var valid = shouldToolRunOnThisPage();
+            if (wasOnValidPage && !valid) {
+                resetAllState();
+                wasOnValidPage = false;
+                if (leaveCheckTimer) { clearInterval(leaveCheckTimer); leaveCheckTimer = null; }
+            }
+        }, CFG.leaveCheckMs);
+    }
+
+    try {
+        window.addEventListener('beforeunload', function() {
+            try { S.set('leavingAt', Date.now().toString()); } catch (e) {}
+        });
+        window.addEventListener('pagehide', function() {
+            try { S.set('leavingAt', Date.now().toString()); } catch (e) {}
+        });
+    } catch (e) {}
+
+    function stopAll() {
+        stopRequested = true;
+        loopRunning = false;
+        fillRunning = false;
+        if (gtrafficCheckTimer) { try { clearInterval(gtrafficCheckTimer); } catch (e) {} gtrafficCheckTimer = null; }
+        if (loopTimer) { try { clearTimeout(loopTimer); } catch (e) {} loopTimer = null; }
+        if (fillHoldTimer) { try { clearTimeout(fillHoldTimer); } catch (e) {} fillHoldTimer = null; }
+        if (googleObserver) { try { googleObserver.disconnect(); } catch (e) {} googleObserver = null; }
+        if (getLinkPollTimer) { try { clearInterval(getLinkPollTimer); } catch (e) {} getLinkPollTimer = null; }
+        if (getLinkObserver) { try { getLinkObserver.disconnect(); } catch (e) {} getLinkObserver = null; }
+        log('STOP ALL');
+    }
+
+    function resetFillFlags() {
+        stopRequested = false;
+        fillRunning = false;
+        fillDone = false;
+        fillRetries = 0;
+        codeShown = false;
+        cachedInput = null; cachedInputTime = 0;
+        cachedConfirm = null; cachedConfirmTime = 0;
+        getLinkClickDone = false;
+        getLinkStartAt = 0;
+        try { S.del('hardStop'); } catch (e) {}
+        try { S.del('countdownRealZero'); } catch (e) {}
+        try { S.del('getLinkClicked'); } catch (e) {}
+        try { S.del('waitingGetLink'); } catch (e) {}
+        try { S.del('getLinkDeadline'); } catch (e) {}
+        try { S.del('getLinkStartAt'); } catch (e) {}
+    }
+
+    function watchdog() {
+        if (S.get('waitingGetLink') === '1') return;
+        var st = getState();
+        var setAt = parseInt(S.get('stateSetAt', '0'), 10);
+        var age = Date.now() - setAt;
+        if (S.get('hardStop') === '1') { stopAll(); return; }
+        if (isRealTargetPage() && (st === STATE.GOOGLE_SEARCH || st === STATE.GOOGLE_CLICK)) { setState(STATE.SCAN_BTN); return; }
+        if (st === STATE.GOOGLE_CLICK && age > CFG.watchdogMs) { setState(STATE.SCAN_BTN); return; }
+        if (st === STATE.SCAN_BTN && age > 45000) { S.set('stateSetAt', Date.now().toString()); }
+        if (st === STATE.WAIT_COUNTDOWN && age > 300000) { setState(STATE.SCAN_BTN); return; }
+        if (st === STATE.GET_CODE && age > CFG.codeTimeoutMs) {
+            log('WATCHDOG: get-code timeout');
+            if (S.get('backDone') !== '1') { S.set('backDone', '1'); var gt = S.get('gtrafficUrl'); if (gt) safeNavigate(gt); }
+        }
+    }
+
+    // ============================================================
+    // UI
+    // ============================================================
+    var UI = {};
+    var C = { do: '#DA251D', doDam: '#8B0000', vang: '#FFCD00', vangDam: '#D4A017', nau: '#3D2817', xam: '#8B7D6B', trang: '#FFFFFF' };
+
+    function buildCSS() {
+        return [
+            '#mp-root{position:fixed;top:6px;left:50%;transform:translate(-50%,0);z-index:2147483647;width:480px;max-width:calc(100vw - 12px);font-family:Arial,sans-serif;font-size:10px;color:#3D2817;background:#FFFDF5;border:3px solid #DA251D;border-radius:10px;user-select:none;max-height:90vh;overflow:hidden;display:flex;flex-direction:column}',
+            '#mp-root *{box-sizing:border-box}',
+            '#mp-root.mp-min{width:48px !important;max-width:48px !important;border-radius:50% !important;top:6px;left:auto;right:6px;transform:none}',
+            '#mp-root.mp-min .mp-head{padding:12px 0;text-align:center}',
+            '#mp-root.mp-min .mp-brand-txt,#mp-root.mp-min .mp-body,#mp-root.mp-min .mp-foot,#mp-root.mp-min .mp-head-actions{display:none}',
+            '#mp-root.mp-min .mp-star{font-size:22px !important;margin:0 !important}',
+            '.mp-head{padding:9px 12px;background:#DA251D;flex-shrink:0;border-bottom:2px solid #FFCD00;position:relative}',
+            '.mp-brand{display:flex;align-items:center;gap:8px}',
+            '.mp-star{font-size:20px;color:#FFCD00;font-weight:900;line-height:1}',
+            '.mp-title-main{font-size:12px;font-weight:900;color:#FFF;letter-spacing:.5px;line-height:1.1}',
+            '.mp-title-main .vn-flag-text{color:#FFCD00}',
+            '.mp-title-sub{font-size:6.5px;letter-spacing:2px;font-weight:800;margin-top:2px;color:#FFCD00}',
+            '.mp-head-actions{position:absolute;top:5px;right:5px;display:flex;gap:3px}',
+            '.mp-icon-btn{width:18px;height:18px;border-radius:50%;border:1.5px solid #FFCD00;background:transparent;color:#FFCD00;font-size:11px;font-weight:900;line-height:1;padding:0;cursor:pointer}',
+            '.mp-body{padding:7px 9px;overflow-y:auto;flex:1;display:grid;grid-template-columns:1fr 1fr;gap:7px;background:#FFFDF5}',
+            '.mp-body .mp-full{grid-column:1/-1}',
+            '.mp-status{grid-column:1/-1;background:#FFF3D6;border-radius:6px;padding:7px 10px;border-left:4px solid #DA251D;font-size:10px;font-weight:900;color:#8B0000;text-align:center}',
+            '.mp-section{background:#FFF;border-radius:6px;padding:7px;border:1.5px solid #FFCD00}',
+            '.mp-section-title{font-size:8.5px;font-weight:900;letter-spacing:1px;margin-bottom:5px;color:#DA251D;text-transform:uppercase}',
+            '.mp-section-title .s{color:#FFCD00;font-size:11px}',
+            '.mp-input{padding:6px 8px;border:1.5px solid #D4A017;border-radius:5px;font-family:inherit;font-size:10px;color:#3D2817;background:#FFF;outline:none;width:100%}',
+            '.mp-input:focus{border-color:#DA251D}',
+            '.mp-row{display:flex;gap:4px;align-items:center}',
+            '.mp-btn{padding:6px 9px;border:none;border-radius:5px;font-weight:900;font-size:9px;cursor:pointer;color:#FFF;background:#DA251D;font-family:inherit;white-space:nowrap;flex-shrink:0;text-transform:uppercase;letter-spacing:.3px;border:1.5px solid #FFCD00}',
+            '.mp-btn.gray{background:#6B5D4F;border-color:#D4C8B8}',
+            '.mp-btn.gold{background:#FFCD00;color:#8B0000;border-color:#DA251D}',
+            '.mp-btn.blue{background:#2B7FC4;border-color:#A8D0F0}',
+            '.mp-domain-list{max-height:55px;overflow-y:auto;margin-top:5px;border-radius:5px;background:#FFF8E7;padding:3px;border:1px solid #FFCD00}',
+            '.mp-domain-item{display:flex;align-items:center;justify-content:space-between;padding:3px 5px;border-radius:4px;font-size:8.5px;margin-bottom:2px;background:#FFF;border-left:3px solid #FFCD00}',
+            '.mp-domain-item .d-name{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:700;color:#3D2817}',
+            '.mp-domain-item .d-use{padding:2px 5px;border-radius:3px;background:#DA251D;color:#FFCD00;font-size:7px;font-weight:900;border:none;margin-left:3px;cursor:pointer}',
+            '.mp-domain-item .d-del{padding:2px 4px;border-radius:3px;background:#B71C1C;color:#FFF;font-size:8px;font-weight:900;border:none;margin-left:2px;cursor:pointer}',
+            '.mp-empty{text-align:center;color:#8B7D6B;font-size:8px;padding:5px;font-style:italic}',
+            '.mp-timer{display:none;grid-column:1/-1;padding:9px 12px;background:#FFF8E7;border-radius:6px;border:2px solid #FFCD00;align-items:center;justify-content:center;gap:12px}',
+            '.mp-timer.show{display:flex}',
+            '.mp-timer-wrap{position:relative;width:50px;height:50px;flex-shrink:0}',
+            '.mp-timer-wrap svg{width:100%;height:100%;transform:rotate(-90deg)}',
+            '.mp-timer-track{fill:none;stroke:#F5E6C8;stroke-width:5}',
+            '.mp-timer-prog{fill:none;stroke:#DA251D;stroke-width:5;stroke-linecap:round;stroke-dasharray:188.5;stroke-dashoffset:0}',
+            '.mp-timer-num{position:absolute;top:0;left:0;right:0;bottom:0;display:flex;align-items:center;justify-content:center;font-size:15px;font-weight:900;color:#DA251D}',
+            '.mp-timer-cap{font-size:9.5px;font-weight:900;color:#8B0000;line-height:1.3;text-align:left}',
+            '.mp-guide{display:none;grid-column:1/-1;background:#FFF3B0;border:2px solid #D4A017;border-radius:5px;padding:6px 9px;text-align:center;font-size:9px;color:#3D2817;line-height:1.4}',
+            '.mp-guide.show{display:block}',
+            '.mp-guide b{color:#8B0000}',
+            '.mp-code{display:none;grid-column:1/-1;background:#FFFDF5;border:2px dashed #DA251D;border-radius:6px;padding:8px 10px}',
+            '.mp-code.show{display:grid;grid-template-columns:auto 1fr;gap:9px;align-items:center}',
+            '.mp-code-label{font-size:8.5px;font-weight:900;letter-spacing:2px;color:#DA251D;text-transform:uppercase;text-align:center}',
+            '.mp-code-right{display:flex;flex-direction:column;gap:4px}',
+            '.mp-code-value{font-family:Courier New,monospace;font-size:16px;font-weight:900;color:#8B0000;letter-spacing:3px;padding:6px 8px;background:#FFF;border-radius:5px;word-break:break-all;user-select:text;border:2px solid #FFCD00;text-align:center}',
+            '.mp-foot{display:flex;justify-content:center;align-items:center;gap:6px;padding:6px;color:#FFCD00;font-size:7.5px;font-weight:900;letter-spacing:1.5px;background:#DA251D;border-top:2px solid #FFCD00}',
+            '.mp-foot .y{color:#FFCD00;font-size:10px}',
+            '.mp-foot .w{color:#FFF;font-size:9px;letter-spacing:2px}',
+            '.mp-foot .vn{color:#FFCD00;font-size:10px;letter-spacing:2px}',
+            '.mp-hint{font-size:7.5px;color:#8B7D6B;font-style:italic;margin-top:3px;display:block}',
+            '#mp-fab{position:fixed;bottom:18px;right:18px;z-index:2147483647;width:50px;height:50px;border-radius:50%;cursor:pointer;color:#FFCD00;display:flex;align-items:center;justify-content:center;font-size:24px;background:#DA251D;border:3px solid #FFCD00}',
+            '#mp-toast{position:fixed;top:60px;left:50%;transform:translateX(-50%);background:#DA251D;color:#FFCD00;padding:10px 20px;border-radius:18px;font-family:Arial,sans-serif;font-size:12px;font-weight:900;z-index:2147483647;border:3px solid #FFCD00;pointer-events:none;letter-spacing:.8px}'
+        ].join('\n');
+    }
+
+    function makeDomainRow(item) {
+        var row = document.createElement('div');
+        row.className = 'mp-domain-item';
+        row.setAttribute('data-domain', item.d);
+        var name = document.createElement('div');
+        name.className = 'd-name';
+        name.textContent = item.d;
+        var useBtn = document.createElement('button');
+        useBtn.className = 'd-use';
+        useBtn.setAttribute('data-action', 'use');
+        useBtn.textContent = 'DÙNG';
+        var delBtn = document.createElement('button');
+        delBtn.className = 'd-del';
+        delBtn.setAttribute('data-action', 'del');
+        delBtn.textContent = '✕';
+        row.appendChild(name);
+        row.appendChild(useBtn);
+        row.appendChild(delBtn);
+        return row;
+    }
+
+    function onDomainListClick(e) {
+        var target = e.target;
+        if (!target || !target.closest) return;
+        var row = target.closest('.mp-domain-item');
+        if (!row) return;
+        var d = row.getAttribute('data-domain');
+        if (!d) return;
+        var action = target.getAttribute && target.getAttribute('data-action');
+        if (action === 'use') {
+            e.stopPropagation();
+            if (UI.domainInput) UI.domainInput.value = d;
+            return;
+        }
+        if (action === 'del') {
+            e.stopPropagation();
+            DOMAINS.remove(d);
+            renderDomainList();
+            return;
+        }
+        if (UI.domainInput) UI.domainInput.value = d;
+    }
+
+    function buildPanel() {
+        if (!IS_TOP || !document.body) return;
+        var old = document.getElementById('mp-root'); if (old) old.remove();
+
+        GM_addStyle(buildCSS());
+
+        var html = [
+            '<div class="mp-head" id="mp-head">',
+            '  <div class="mp-head-actions">',
+            '    <button class="mp-icon-btn" id="mp-min">−</button>',
+            '    <button class="mp-icon-btn" id="mp-close">✕</button>',
+            '  </div>',
+            '  <div class="mp-brand">',
+            '    <div class="mp-star">★</div>',
+            '    <div class="mp-brand-txt">',
+            '      <div class="mp-title-main">MINH PHƯƠNG X ANH TUẤN <span class="vn-flag-text">★</span></div>',
+            '      <div class="mp-title-sub">AUTO GTRAFFIC · VN · v46.3.4</div>',
+            '    </div>',
+            '  </div>',
+            '</div>',
+            '<div class="mp-body">',
+            '  <div class="mp-status" id="mp-status">★ Sẵn sàng ★</div>',
+            '  <div class="mp-section">',
+            '    <div class="mp-section-title"><span class="s">★</span> DOMAIN ĐÍCH</div>',
+            '    <input class="mp-input" id="mp-domain-input" type="text" placeholder="vd: example.com" />',
+            '    <div class="mp-section-title" style="margin-top:5px"><span class="s">★</span> TỪ KHÓA SERVER (TÙY CHỌN)</div>',
+            '    <input class="mp-input" id="mp-keyword-input" type="text" placeholder="để trống = dùng domain" />',
+            '    <span class="mp-hint">Click kết quả Google đầu tiên · Nếu có keyword thì tìm keyword</span>',
+            '    <div class="mp-row" style="margin-top:5px;margin-bottom:0">',
+            '      <button class="mp-btn blue" id="mp-save-domain" style="flex:1">💾 LƯU</button>',
+            '      <button class="mp-btn gold" id="mp-start" style="flex:1">⚡ BẮT ĐẦU</button>',
+            '    </div>',
+            '    <div class="mp-domain-list" id="mp-domain-list"></div>',
+            '  </div>',
+            '  <div class="mp-section">',
+            '    <div class="mp-section-title"><span class="s">★</span> ĐIỀU KHIỂN</div>',
+            '    <button class="mp-btn gray" id="mp-reset" style="width:100%;padding:7px">🔄 RESET</button>',
+            '    <div class="mp-timer" id="mp-timer" style="margin-top:5px;margin-bottom:0">',
+            '      <div class="mp-timer-wrap">',
+            '        <svg viewBox="0 0 60 60"><circle class="mp-timer-track" cx="30" cy="30" r="26"/><circle class="mp-timer-prog" id="mp-timer-prog" cx="30" cy="30" r="26"/></svg>',
+            '        <div class="mp-timer-num" id="mp-timer-num">0</div>',
+            '      </div>',
+            '      <div class="mp-timer-cap" id="mp-timer-cap">ĐANG CHỜ</div>',
+            '    </div>',
+            '  </div>',
+            '  <div class="mp-guide mp-full" id="mp-guide"></div>',
+            '  <div class="mp-code" id="mp-code">',
+            '    <div class="mp-code-label">MÃ</div>',
+            '    <div class="mp-code-right">',
+            '      <div class="mp-code-value" id="mp-code-value">----</div>',
+            '      <button class="mp-btn gold" id="mp-copy-btn" style="width:100%;padding:6px;font-size:9px">📋 COPY</button>',
+            '    </div>',
+            '  </div>',
+            '</div>',
+            '<div class="mp-foot">',
+            '  <span class="y">★</span>',
+            '  <span class="w">(c) MINHPHUONG X ANH TUẤN</span>',
+            '  <span class="vn">🇻🇳 VN 🇻🇳</span>',
+            '  <span class="y">★</span>',
+            '</div>'
+        ].join('');
+
+        var root = document.createElement('div');
+        root.id = 'mp-root';
+        root.innerHTML = html;
+        document.body.appendChild(root);
+
+        UI = {
+            root: root, head: root.querySelector('#mp-head'), status: root.querySelector('#mp-status'),
+            timer: root.querySelector('#mp-timer'), timerNum: root.querySelector('#mp-timer-num'),
+            timerProg: root.querySelector('#mp-timer-prog'), timerCap: root.querySelector('#mp-timer-cap'),
+            guide: root.querySelector('#mp-guide'), code: root.querySelector('#mp-code'),
+            codeVal: root.querySelector('#mp-code-value'),
+            copyBtn: root.querySelector('#mp-copy-btn'),
+            minBtn: root.querySelector('#mp-min'), closeBtn: root.querySelector('#mp-close'),
+            domainInput: root.querySelector('#mp-domain-input'),
+            keywordInput: root.querySelector('#mp-keyword-input'),
+            saveBtn: root.querySelector('#mp-save-domain'),
+            startBtn: root.querySelector('#mp-start'), domainList: root.querySelector('#mp-domain-list'),
+            resetBtn: root.querySelector('#mp-reset')
+        };
+
+        if (UI.domainList) UI.domainList.addEventListener('click', onDomainListClick);
+
+        UI.copyBtn.onclick = function() {
+            var code = (UI.codeVal.textContent || '').trim();
+            if (!code || code === '----') { showToast('⚠️ Chưa có mã!'); return; }
+            copyToClipboard(code);
+            UI.copyBtn.textContent = '✅ ĐÃ COPY: ' + code;
+            setTimeout(function() { UI.copyBtn.textContent = '📋 COPY'; }, 2000);
+        };
+
+        UI.resetBtn.onclick = function() { if (!confirm('Reset toan bo?')) return; S.reset(); location.reload(); };
+        UI.saveBtn.onclick = function() {
+            var v = UI.domainInput.value.trim();
+            if (!v) { UI.domainInput.focus(); return; }
+            var ok = DOMAINS.save(v);
+            UI.saveBtn.textContent = ok ? '✓ LƯU' : '✓ CÓ RỒI';
+            setTimeout(function(){ UI.saveBtn.textContent = '💾 LƯU'; }, 1200);
+            renderDomainList();
+        };
+        UI.startBtn.onclick = function() {
+            var vDomain = UI.domainInput.value.trim();
+            var vKeyword = UI.keywordInput ? UI.keywordInput.value.trim() : '';
+            if (!vDomain && !vKeyword) {
+                UI.status.textContent = '★ Nhập domain hoặc từ khóa! ★';
+                UI.domainInput.focus();
+                return;
+            }
+            var domain = vDomain ? vDomain.replace(/^https?:\/\//, '').replace(/\/.*$/, '').trim() : '';
+            var keyword = vKeyword;
+            var searchTerm = keyword ? keyword : domain;
+
+            S.del('code'); S.del('targetUrl'); S.del('filled'); S.del('confirmed');
+            S.del('lastClickTime'); S.del('googleClickTries'); S.del('codeFoundAt');
+            S.del('lastServerSec'); S.del('serverTotalSec'); S.del('navigatingBack');
+            S.del('cdStartSec'); S.del('cdStartAt'); S.del('btnClickAt');
+            S.del('gotCodeAt'); S.del('codeAttempts'); S.del('backDone');
+            S.del('lastNavUrl'); S.del('lastNavAt');
+            S.del('hardStop');
+            S.del('countdownRealZero');
+            S.del('getLinkClicked');
+            S.del('waitingGetLink');
+            S.del('getLinkDeadline');
+            S.del('getLinkStartAt');
+            resetFillFlags();
+            S.set('domain', domain);
+            S.set('keyword', keyword);
+            S.set('gtrafficUrl', location.href);
+            setState(STATE.GOOGLE_SEARCH);
+
+            var gurl = 'https://www.google.com/search?q=' + encodeURIComponent(searchTerm);
+            log('B1: Mo Google: ' + gurl + ' (searchTerm=' + searchTerm + ')');
+            var nt = window.open(gurl, '_blank');
+            if (domain) DOMAINS.save(domain);
+            renderDomainList();
+            UI.status.textContent = nt ? '★ B1: Đã mở Google ★' : '★ Cho phép popup! ★';
+        };
+        UI.domainInput.addEventListener('keydown', function(e){ if (e.key === 'Enter') UI.startBtn.click(); });
+        if (UI.keywordInput) UI.keywordInput.addEventListener('keydown', function(e){ if (e.key === 'Enter') UI.startBtn.click(); });
+
+        UI.minBtn.onclick = function(e){ e.stopPropagation(); toggleMin(); };
+        UI.closeBtn.onclick = function(e){
+            e.stopPropagation();
+            UI.root.style.display = 'none';
+            var fab = document.getElementById('mp-fab');
+            if (!fab) {
+                fab = document.createElement('div'); fab.id = 'mp-fab'; fab.innerHTML = '★';
+                fab.onclick = function(){ UI.root.style.display = ''; fab.remove(); };
+                document.body.appendChild(fab);
+            }
+        };
+
+        if (S.get('min') === '1') { UI.root.classList.add('mp-min'); UI.minBtn.textContent = '+'; }
+        var pos = S.get('pos');
+        if (pos && typeof pos === 'object') { UI.root.style.left = pos.x + 'px'; UI.root.style.top = pos.y + 'px'; UI.root.style.transform = 'none'; }
+        enableDrag();
+        var curDomain = S.get('domain');
+        if (curDomain) UI.domainInput.value = curDomain;
+        var curKeyword = S.get('keyword');
+        if (curKeyword && UI.keywordInput) UI.keywordInput.value = curKeyword;
+        renderDomainList();
+    }
+
+    function toggleMin() {
+        if (!UI.root) return;
+        var m = UI.root.classList.toggle('mp-min');
+        UI.minBtn.textContent = m ? '+' : '−';
+        S.set('min', m ? '1' : '0');
+    }
+    function enableDrag() {
+        var h = UI.head; if (!h) return;
+        var dg = false, sx = 0, sy = 0, ox = 0, oy = 0;
+        var dn = function(e) {
+            if (e.target.closest('.mp-icon-btn')) return;
+            if (UI.root.classList.contains('mp-min')) { toggleMin(); return; }
+            dg = true;
+            var p = e.touches ? e.touches[0] : e;
+            sx = p.clientX; sy = p.clientY;
+            var r = UI.root.getBoundingClientRect();
+            ox = r.left; oy = r.top;
+            UI.root.style.left = ox + 'px'; UI.root.style.top = oy + 'px'; UI.root.style.right = 'auto'; UI.root.style.transform = 'none';
+            document.addEventListener('mousemove', mv, { passive: false });
+            document.addEventListener('mouseup', up);
+            document.addEventListener('touchmove', mv, { passive: false });
+            document.addEventListener('touchend', up);
+            e.preventDefault();
+        };
+        var mv = function(e) {
+            if (!dg) return;
+            var p = e.touches ? e.touches[0] : e;
+            var nx = ox + (p.clientX - sx), ny = oy + (p.clientY - sy);
+            nx = Math.max(0, Math.min(nx, window.innerWidth - UI.root.offsetWidth));
+            ny = Math.max(0, Math.min(ny, window.innerHeight - UI.root.offsetHeight));
+            UI.root.style.left = nx + 'px'; UI.root.style.top = ny + 'px';
+            if (e.cancelable) e.preventDefault();
+        };
+        var up = function() {
+            if (!dg) return;
+            dg = false;
+            var r = UI.root.getBoundingClientRect();
+            S.set('pos', { x: r.left, y: r.top });
+            document.removeEventListener('mousemove', mv);
+            document.removeEventListener('mouseup', up);
+            document.removeEventListener('touchmove', mv);
+            document.removeEventListener('touchend', up);
+        };
+        h.addEventListener('mousedown', dn);
+        h.addEventListener('touchstart', dn, { passive: false });
+    }
+    function refreshStatus() {
+        if (!UI.status) return;
+        var map = {
+            'idle': '★ Sẵn sàng ★', 'google-search': '★ B2: Tìm Google... ★',
+            'google-click': '★ B3: Click trang... ★', 'scan-btn': '★ B4: Tìm nút g xanh... ★',
+            'wait-countdown': '★ B5: Chờ hết giờ... ★', 'get-code': '★ B5: Lấy mã... ★',
+            'back-gtraffic': '★ Về gtraffic.io... ★', 'fill-code': '★ Điền + nộp mã... ★', 'done': '★ HOÀN TẤT! ★'
+        };
+        UI.status.textContent = map[getState()] || ('★ ' + getState() + ' ★');
+    }
+    function showTimer(sec, max, label) {
+        if (!UI.timer) return;
+        UI.timer.classList.add('show');
+        UI.timerNum.textContent = sec;
+        UI.timerCap.textContent = label || 'ĐANG CHỜ';
+        if (max > 0) {
+            var C_ = 2 * Math.PI * 26;
+            var ratio = Math.min(1, Math.max(0, sec / max));
+            UI.timerProg.style.strokeDashoffset = C_ * (1 - ratio);
+        }
+    }
+    function showGuide(html) { if (UI.guide) { UI.guide.innerHTML = html; UI.guide.classList.add('show'); } }
+
+    function copyToClipboard(text) {
+        if (!text) return false;
+        var tried = false;
+        try {
+            if (navigator.clipboard && navigator.clipboard.writeText) {
+                navigator.clipboard.writeText(text).then(function() {
+                    log('COPY OK');
+                    S.set('lastCopyOk', '1');
+                    S.set('lastCopyText', text);
+                }).catch(function(e) {
+                    if (copyViaExecCommand(text)) { S.set('lastCopyOk', '1'); S.set('lastCopyText', text); }
+                    else { S.set('lastCopyOk', '0'); S.set('lastCopyText', text); }
+                });
+                tried = true;
+            }
+        } catch (e) {}
+        if (!tried) {
+            if (copyViaExecCommand(text)) { S.set('lastCopyOk', '1'); S.set('lastCopyText', text); }
+            else { S.set('lastCopyOk', '0'); S.set('lastCopyText', text); }
+        }
+        return true;
+    }
+
+    function copyViaExecCommand(text) {
+        try {
+            var ta = document.createElement('textarea');
+            ta.value = text;
+            ta.setAttribute('readonly', '');
+            ta.style.cssText = 'position:fixed;top:0;left:0;width:2px;height:2px;padding:0;border:none;outline:none;box-shadow:none;background:transparent;opacity:0.01;z-index:-1;';
+            document.body.appendChild(ta);
+            ta.focus();
+            ta.select();
+            try { ta.setSelectionRange(0, text.length); } catch (e) {}
+            var ok = false;
+            try { ok = document.execCommand('copy'); } catch (e) {}
+            document.body.removeChild(ta);
+            if (ok) { log('COPY OK (exec)'); return true; }
+            return false;
+        } catch (e) { return false; }
+    }
+
+    function showToast(msg, ms) {
+        var old = document.getElementById('mp-toast'); if (old) old.remove();
+        var t = document.createElement('div');
+        t.id = 'mp-toast';
+        t.textContent = msg;
+        document.body.appendChild(t);
+        setTimeout(function() { if (t.parentNode) t.remove(); }, ms || 2500);
+    }
+
+    function showCode(code) {
+        if (!UI.code) return;
+        UI.code.classList.add('show');
+        UI.codeVal.textContent = code;
+        copyToClipboard(code);
+        setTimeout(function() {
+            if (S.get('lastCopyOk') === '0') {
+                showToast('⚠️ KHÔNG COPY ĐƯỢC - BẤM NÚT COPY!', 4000);
+            } else {
+                showToast('★ ĐÃ COPY MÃ: ' + code + ' ★', 2800);
+            }
+        }, 400);
+        log('SHOW CODE: ' + code);
+    }
+
+    function renderDomainList() {
+        if (!IS_TOP || !UI.domainList) return;
+        var list = DOMAINS.getList();
+        UI.domainList.innerHTML = '';
+        if (!list.length) { UI.domainList.innerHTML = '<div class="mp-empty">★ Chưa có domain ★</div>'; return; }
+        var frag = document.createDocumentFragment();
+        for (var i = 0; i < list.length; i++) frag.appendChild(makeDomainRow(list[i]));
+        UI.domainList.appendChild(frag);
+    }
+
+    // ============================================================
+    // LOGIC AUTO
+    // ============================================================
+
+    function isBlueish(c) {
+        if (!c) return false;
+        if (c.b < 110) return false;
+        if (c.r > c.b) return false;
+        if (c.g > c.b + 25) return false;
+        if (c.b - c.r < 30) return false;
+        return true;
+    }
+
+    function getBgRGBA(el) {
+        var c = tryGetBg(el);
+        if (c && c.a > 0.5) return c;
+        var p = el.parentElement;
+        var depth = 0;
+        while (p && depth < 5) {
+            var pc = tryGetBg(p);
+            if (pc && pc.a > 0.5) return pc;
+            p = p.parentElement;
+            depth++;
+        }
+        return null;
+    }
+
+    function tryGetBg(el) {
+        if (!el) return null;
+        try {
+            var st = window.getComputedStyle(el);
+            var bg = st.backgroundColor || '';
+            var m = bg.match(/rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)(?:\s*,\s*([\d.]+))?/);
+            if (m) {
+                var a = m[4] !== undefined ? parseFloat(m[4]) : 1;
+                return { r: parseInt(m[1],10), g: parseInt(m[2],10), b: parseInt(m[3],10), a: a };
+            }
+            var bgImg = st.backgroundImage || '';
+            var m2 = bgImg.match(/rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)(?:\s*,\s*([\d.]+))?/);
+            if (m2) {
+                var a2 = m2[4] !== undefined ? parseFloat(m2[4]) : 1;
+                return { r: parseInt(m2[1],10), g: parseInt(m2[2],10), b: parseInt(m2[3],10), a: a2 };
+            }
+        } catch (e) {}
+        return null;
+    }
+
+    function isRound(el) {
+        var w = el.offsetWidth, h = el.offsetHeight;
+        if (w < 30 || w > 200) return false;
+        if (h < 30 || h > 200) return false;
+        if (Math.abs(w - h) > 15) return false;
+        return true;
+    }
+    function isExcluded(el) {
+        var cls = (el.className || '').toString().toLowerCase();
+        var id = (el.id || '').toString().toLowerCase();
+        var c = ' ' + cls + ' ' + id + ' ';
+        var ban = ['logo','brand','avatar','banner','header','nav','menu','footer','navbar','topbar','toolbar','copyright'];
+        for (var i = 0; i < ban.length; i++) {
+            if (c.indexOf(' ' + ban[i] + ' ') !== -1) return true;
+            if (c.indexOf(' ' + ban[i] + '-') !== -1) return true;
+            if (c.indexOf('-' + ban[i] + ' ') !== -1) return true;
+        }
+        return false;
+    }
+    function describeEl(el) {
+        if (!el) return 'null';
+        var cls = (el.className || '').toString().slice(0,30);
+        var id = el.id || '';
+        var txt = (el.textContent || '').trim().slice(0,15);
+        return el.tagName + '#' + id + '.' + cls + ' "' + txt + '"';
+    }
+
+    function findByPixelScan() {
+        if (!document.body) return null;
+        var vw = window.innerWidth, vh = window.innerHeight;
+        var step = 30;
+        var seen = {};
+        var candidates = [];
+        for (var y = 40; y < vh - 40; y += step) {
+            for (var x = 40; x < vw - 40; x += step) {
+                try {
+                    var el = document.elementFromPoint(x, y);
+                    if (!el) continue;
+                    if (el.closest && el.closest('#mp-root')) continue;
+                    if (el.closest && el.closest('#mp-fab')) continue;
+                    if (isExcluded(el)) continue;
+                    if (!isRound(el)) {
+                        var p = el.parentElement; var cnt = 0;
+                        while (p && cnt < 3) {
+                            if (isExcluded(p)) break;
+                            if (isRound(p)) { el = p; break; }
+                            p = p.parentElement; cnt++;
+                        }
+                        if (!isRound(el)) continue;
+                    }
+                    var key = el.tagName + '#' + (el.id||'') + '.' + (el.className||'').toString().slice(0,20);
+                    if (seen[key]) continue;
+                    seen[key] = true;
+                    var score = 0;
+                    var bg = getBgRGBA(el);
+                    if (isBlueish(bg)) score += 100;
+                    try { if (el.querySelector('svg, img, canvas, text')) score += 60; } catch (e) {}
+                    if (el.tagName === 'SVG' || el.tagName === 'IMG' || el.tagName === 'CANVAS') score += 50;
+                    var txt = (el.textContent || '').trim();
+                    if (txt === 'g' || txt === 'G') score += 200;
+                    else if (/^\d{1,4}$/.test(txt)) score += 200;
+                    else if (/^g\d{1,4}$/i.test(txt)) score += 200;
+                    var r = el.getBoundingClientRect();
+                    var cx = r.left + r.width / 2; var cy = r.top + r.height / 2;
+                    var d = Math.abs(cx - vw/2)/vw + Math.abs(cy - vh/2)/vh;
+                    score += Math.max(0, 40 - d * 40);
+                    if (score >= 100) candidates.push({ el: el, score: score });
+                } catch (e) {}
+            }
+        }
+        if (!candidates.length) return null;
+        candidates.sort(function(a,b){ return b.score - a.score; });
+        return candidates[0].el;
+    }
+
+    function findByHeuristic() {
+        try {
+            var byId = document.querySelectorAll('#avt-btn, [id*="avt" i], [class*="avt" i]');
+            for (var i = 0; i < byId.length; i++) {
+                var e = byId[i];
+                if (e.closest && e.closest('#mp-root')) continue;
+                var w = e.offsetWidth || e.clientWidth;
+                var h = e.offsetHeight || e.clientHeight;
+                if (w >= 30 && w <= 250 && Math.abs(w-h) <= 20) return e;
+            }
+        } catch (e) {}
+        try {
+            var svgs = document.querySelectorAll('svg');
+            for (var j = 0; j < svgs.length; j++) {
+                var svg = svgs[j];
+                if (svg.closest && svg.closest('#mp-root')) continue;
+                var sw = svg.offsetWidth || svg.clientWidth;
+                var sh = svg.offsetHeight || svg.clientHeight;
+                if (sw < 30 || sw > 250) continue;
+                if (Math.abs(sw-sh) > 20) continue;
+                if (svg.offsetParent === null) continue;
+                try {
+                    var txtEl = svg.querySelector('text, tspan');
+                    if (txtEl) {
+                        var tt = (txtEl.textContent || '').trim();
+                        if (/^g?\d+$/i.test(tt) || /^[A-Za-z0-9_\-]{4,24}$/.test(tt)) return svg;
+                    }
+                } catch (e) {}
+                try {
+                    var circles = svg.querySelectorAll('circle');
+                    if (circles.length > 0 && sw >= 40) return svg;
+                } catch (e) {}
+            }
+        } catch (e) {}
+        try {
+            var all = document.querySelectorAll('div, span, button, a, i, b, strong');
+            for (var k = 0; k < all.length; k++) {
+                var e2 = all[k];
+                if (e2.closest && e2.closest('#mp-root')) continue;
+                if (e2.closest && e2.closest('#mp-fab')) continue;
+                var w2 = e2.offsetWidth || 0;
+                var h2 = e2.offsetHeight || 0;
+                if (w2 < 30 || w2 > 200) continue;
+                if (Math.abs(w2-h2) > 15) continue;
+                var txt2 = (e2.textContent || '').trim();
+                if (txt2 !== 'g' && txt2 !== 'G') continue;
+                return e2;
+            }
+        } catch (e) {}
+        try {
+            var all2 = document.querySelectorAll('div, span, button, a, i');
+            for (var m = 0; m < all2.length; m++) {
+                var e3 = all2[m];
+                if (e3.closest && e3.closest('#mp-root')) continue;
+                if (e3.closest && e3.closest('#mp-fab')) continue;
+                var w3 = e3.offsetWidth || 0;
+                var h3 = e3.offsetHeight || 0;
+                if (w3 < 40 || w3 > 150) continue;
+                if (Math.abs(w3-h3) > 15) continue;
+                var bg3 = getBgRGBA(e3);
+                if (!isBlueish(bg3)) continue;
+                return e3;
+            }
+        } catch (e) {}
+        return null;
+    }
+
+    function findGreenGButton() {
+        if (cachedBtn && Date.now() - cachedBtnTime < 1000) {
+            try { if (document.contains(cachedBtn) && cachedBtn.offsetParent !== null) return cachedBtn; } catch (e) {}
+        }
+        var b = findByHeuristic();
+        if (b) { cachedBtn = b; cachedBtnTime = Date.now(); return b; }
+        b = findByPixelScan();
+        if (b) { cachedBtn = b; cachedBtnTime = Date.now(); return b; }
+        cachedBtn = null;
+        return null;
+    }
+
+    function readBtnNumber(btn) {
+        if (!btn) return null;
+        var t = (btn.textContent || '').replace(/\s+/g, '').trim();
+        var m = t.match(/^g?(\d{1,4})$/i);
+        if (m) {
+            var s = parseInt(m[1],10);
+            if (s >= 0 && s <= 999) return s;
+        }
+        try {
+            var inners = btn.querySelectorAll('text, tspan');
+            for (var i = 0; i < inners.length; i++) {
+                var tt = (inners[i].textContent || '').replace(/\s+/g, '').trim();
+                var mm = tt.match(/^g?(\d{1,4})$/i);
+                if (mm) { var s2 = parseInt(mm[1],10); if (s2 >= 0 && s2 <= 999) return s2; }
+            }
+        } catch (e) {}
+        return null;
+    }
+
+    function clickBtn(el) {
+        if (!el) return;
+        var sig = describeEl(el);
+        try { el.scrollIntoView({ behavior: 'instant', block: 'center' }); } catch (e) {}
+        setTimeout(function() {
+            try { el.click(); } catch (e) {}
+            try { el.dispatchEvent(new Event('click', { bubbles: true, cancelable: true })); } catch (e) {}
+            try { el.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true })); } catch (e) {}
+            log('✓ CLICK: ' + sig);
+        }, 100);
+    }
+
+    var CD_PATTERNS = [
+        /vui long cho\s*(\d+)\s*s?\s*\(\s*(\d+)\s*\/\s*(\d+)\s*\)/i,
+        /cho\s*(\d+)\s*s\s*\(\s*(\d+)\s*\/\s*(\d+)\s*\)/i,
+        /cho\s*(\d+)\s*giay/i, /cho\s*(\d+)\s*s\b/i,
+        /con[:\s]*(\d+)/i, /wait[:\s]*(\d+)/i, /time[:\s]*(\d+)/i,
+        /(\d+)\s*seconds?/i, /(\d+)\s*giay/i
+    ];
+    function parseCd(t) {
+        if (!t) return null;
+        for (var p = 0; p < CD_PATTERNS.length; p++) {
+            var m = t.match(CD_PATTERNS[p]);
+            if (m) {
+                var s = parseInt(m[1],10);
+                if (s >= 0 && s <= 999) return { sec: s, phase: m[2]?parseInt(m[2],10):1, total: m[3]?parseInt(m[3],10):2 };
+            }
+        }
+        return null;
+    }
+
+    function readCountdown() {
+        var btn = cachedBtn;
+        if (!btn || !document.contains(btn)) btn = findGreenGButton();
+
+        if (btn) {
+            var n = readBtnNumber(btn);
+            if (n !== null) {
+                if (S.get('cdStartSec') === '0' || !S.get('cdStartSec')) {
+                    S.set('cdStartSec', n.toString());
+                    S.set('cdStartAt', Date.now().toString());
+                }
+                if (n === 0) S.set('countdownRealZero', '1');
+                else S.set('countdownRealZero', '0');
+                return { sec: n, phase: 1, total: 2, src: 'btn' };
+            }
+        }
+
+        try {
+            var names = ['countdown','timer','timeLeft','timeleft','remaining','remain','cd','counter','count','sec','seconds'];
+            for (var i = 0; i < names.length; i++) {
+                var v = window[names[i]];
+                if (typeof v === 'number' && v >= 0 && v <= 999) {
+                    if (v === 0) S.set('countdownRealZero', '1');
+                    else S.set('countdownRealZero', '0');
+                    return { sec: v, phase: 1, total: 2, src: 'win' };
+                }
+                if (typeof v === 'string' && /^\d{1,4}$/.test(v)) {
+                    var nv = parseInt(v, 10);
+                    if (nv === 0) S.set('countdownRealZero', '1');
+                    else S.set('countdownRealZero', '0');
+                    return { sec: nv, phase: 1, total: 2, src: 'win' };
+                }
+            }
+        } catch (e) {}
+
+        try {
+            if (btn) {
+                var els = btn.querySelectorAll('text, tspan');
+                for (var j = 0; j < els.length; j++) {
+                    var t = (els[j].textContent || '').replace(/\s+/g, '').trim();
+                    var mm = t.match(/^g?(\d{1,4})$/i);
+                    if (mm) {
+                        var n2 = parseInt(mm[1], 10);
+                        if (n2 >= 0 && n2 <= 999) {
+                            if (n2 === 0) S.set('countdownRealZero', '1');
+                            else S.set('countdownRealZero', '0');
+                            return { sec: n2, phase: 1, total: 2, src: 'svgtext' };
+                        }
+                    }
+                }
+            }
+        } catch (e) {}
+
+        try {
+            var bt = (document.body && document.body.innerText) || '';
+            var r = parseCd(bt);
+            if (r) {
+                if (r.sec === 0) S.set('countdownRealZero', '1');
+                else S.set('countdownRealZero', '0');
+                return { sec: r.sec, phase: r.phase, total: r.total, src: 'page' };
+            }
+        } catch (e) {}
+
+        var startSec = parseInt(S.get('cdStartSec', '0'), 10);
+        var startAt = parseInt(S.get('cdStartAt', '0'), 10);
+        if (startSec > 0 && startAt > 0) {
+            var elapsed = Math.floor((Date.now() - startAt) / 1000);
+            var remain = startSec - elapsed;
+            if (remain < 0) remain = 0;
+            return { sec: remain, phase: 1, total: 2, src: 'self' };
+        }
+        var clickAt = parseInt(S.get('btnClickAt', '0'), 10);
+        if (clickAt > 0) {
+            var elapsed2 = Math.floor((Date.now() - clickAt) / 1000);
+            var remain2 = CFG.defaultCountdown - elapsed2;
+            if (remain2 < 0) remain2 = 0;
+            return { sec: remain2, phase: 1, total: 2, src: 'click' };
+        }
+        return null;
+    }
+
+    var CODE_BLACKLIST = [
+        'livestream','youtube','facebook','google','login','logout','signup','signin','register','account','password','email',
+        'verify','submit','confirm','accept','cancel','button','click','here','website','hotline','support','contact','about','policy',
+        'privacy','terms','service','download','upload','install','update','welcome','hello','world','news','blog','shop','store','cart','order',
+        'payment','banking','wallet','deposit','withdraw','bonus','promotion','voucher','coupon','gift','reward','prize','winner',
+        'game','casino','sports','betting','jackpot','lottery','online','offline','mobile','desktop','tablet','laptop','computer',
+        'android','windows','linux','chrome','firefox','safari','messenger','telegram','whatsapp','zalo','viber','skype',
+        'buoc','step','next','prev','back','forward','home','search','find','filter','sort','view','show','hide','open','close',
+        'start','stop','pause','resume','play','replay','load','reload','refresh','true','false','null','undefined','none','empty',
+        'full','free','paid','public','private','secure','locked','unlocked','hidden','visible','code','ma','mã','verify','nhap','nhập',
+        'lay','lấy','xacnhan','nhan','nhận','xac','nhanma','step04','buoc04',
+        'faqfun88','fun88faq','faqfun','funfaq','fun88','sunwin','hitclub','go88','b52club','rikvip','789club','banca','gamebai',
+        'huongdan','cachthuc','thethao','xoso','xosomien','lienket','lienhe','chinhsach','baomat','tracnghiem',
+        'dangky','dangnhap','naptien','ruttien','khuyenmai','gioithieu','lienkenh','lienke','hotro','hotline24','troly',
+        'menu','footer','header','navbar','sidebar','topbar','copyright','allright','reserved',
+        'm88','mu88','mu99','123b','789bet','fb88','w88','bk8','jun88','188bet','tf88',
+        'xoso66','xoso','xs66','soxoso','xosomienbac','xsmb','xsmn','xsmt','soicau','dudoan','ketqua','quaythu',
+        'trang404','trang405','trang403','trang500','trang502','trang503',
+        'page404','page405','page403','page500','page502','page503',
+        'error404','error500','error403','error502','error503',
+        'notfound','not-found','not_found',
+        'comingsoon','coming-soon',
+        'pleasewait','tryagain','retryagain',
+        'nhapma','xacnhanma','nhapmaxacnhan',
+        'trangchu','trangloi','khongtimthay','khongcohay'
+    ];
+
+    var CODE_BLACKLIST_REGEX = [
+        /^trang\s*\d+$/i,
+        /^page\s*\d+$/i,
+        /^error\s*\d+$/i,
+        /^loi\s*\d+$/i,
+        /^lỗi\s*\d+$/i,
+        /^notfound\d*$/i,
+        /^comingsoon\d*$/i,
+        /^pleasewait\d*$/i,
+        /^tryagain\d*$/i,
+        /^\d{3,4}error$/i,
+        /^errorcode\d*$/i,
+        /^trang\d*$/i,
+        /^page\d*$/i,
+        /^error\d*$/i,
+        /^loi\d*$/i
+    ];
+
+    function isBlacklistedCode(s) {
+        if (!s) return true;
+        var lc = s.toLowerCase();
+
+        if (lc === 'trang404' || lc === 'page404' || lc === 'error404' ||
+            lc === 'trang405' || lc === 'trang403' || lc === 'trang500' ||
+            lc === 'page405' || lc === 'page500' || lc === 'error500' ||
+            lc === 'notfound' || lc === 'comingsoon' || lc === 'pleasewait') {
+            return true;
+        }
+
+        if (lc === 'code' || lc === 'ma' || lc === 'mã' || lc === 'verify' || lc === 'nhap' || lc === 'nhập' || lc === 'lay' || lc === 'lấy' || lc === 'xacnhan' || lc === 'nhanma' || lc === 'nhan') return true;
+
+        for (var i = 0; i < CODE_BLACKLIST.length; i++) {
+            if (lc === CODE_BLACKLIST[i]) return true;
+        }
+
+        if (/trang\s*\d+/i.test(s)) return true;
+        if (/page\s*\d+/i.test(s)) return true;
+        if (/error\s*\d+/i.test(s)) return true;
+
+        var menuWords = ['faqfun','fun88','sunwin','hitclub','go88','b52','rikvip','789club','lienket','lienhe','huongdan','dangky','dangnhap','naptien','ruttien','khuyenmai','gioithieu','hotro','thethao','xoso','chinhsach','baomat','tracnghiem','m88','mu88','mu99','xoso66','xs66'];
+        for (var j = 0; j < menuWords.length; j++) {
+            if (lc.indexOf(menuWords[j]) !== -1) return true;
+        }
+
+        for (var k = 0; k < CODE_BLACKLIST_REGEX.length; k++) {
+            if (CODE_BLACKLIST_REGEX[k].test(s)) return true;
+        }
+
+        if (/^[a-z]{8}$/.test(lc)) return true;
+        if (/0{3,}$/.test(s)) return true;
+        return false;
+    }
+
+    function isValidCodeShape(s) {
+        if (!s) return false;
+        if (s.length !== 8) return false;
+        if (!/^[A-Za-z0-9]+$/.test(s)) return false;
+        if (!/[0-9]/.test(s)) return false;
+        if (!/[A-Za-z]/.test(s)) return false;
+
+        var digits = (s.match(/[0-9]/g) || []).length;
+        if (digits < 1 || digits > 7) return false;
+        var letters = (s.match(/[A-Za-z]/g) || []).length;
+        if (letters < 1 || letters > 7) return false;
+        if (/^(.)\1{7}$/.test(s)) return false;
+        if (/^(01234567|12345678|abcdefgh|ABCDEFGH|00000000|11111111)$/i.test(s)) return false;
+        return true;
+    }
+
+    function scoreCodeCandidate(el, code) {
+        var score = 0;
+        try {
+            if (cachedBtn && document.contains(cachedBtn)) {
+                try {
+                    var r1 = el.getBoundingClientRect();
+                    var r2 = cachedBtn.getBoundingClientRect();
+                    var dx = (r1.left + r1.width/2) - (r2.left + r2.width/2);
+                    var dy = (r1.top + r1.height/2) - (r2.top + r2.height/2);
+                    var dist = Math.sqrt(dx*dx + dy*dy);
+                    if (dist < 150) score += 200;
+                    else if (dist < 300) score += 150;
+                    else if (dist < 500) score += 100;
+                    else if (dist < 800) score += 50;
+                } catch (e) {}
+            }
+            try {
+                var bg = getBgRGBA(el);
+                if (isBlueish(bg)) score += 500;
+            } catch (e) {}
+            try {
+                var st = window.getComputedStyle(el);
+                var fs = parseFloat(st.fontSize) || 0;
+                if (fs >= 20) score += 60;
+                else if (fs >= 16) score += 40;
+                else if (fs >= 14) score += 20;
+                if (st.fontWeight === 'bold' || parseInt(st.fontWeight,10) >= 600) score += 30;
+            } catch (e) {}
+            try {
+                var cls = ((el.className || '') + ' ' + (el.id || '')).toLowerCase();
+                if (cls.indexOf('code') !== -1 || cls.indexOf('result') !== -1 || cls.indexOf('ma-') !== -1 || cls.indexOf('-ma') !== -1) score += 80;
+            } catch (e) {}
+            try {
+                var par = el.closest && el.closest('button, a, [role="button"]');
+                if (par) score += 40;
+            } catch (e) {}
+            try {
+                var w = el.offsetWidth || 0;
+                var h = el.offsetHeight || 0;
+                if (w >= 60 && h >= 30) score += 30;
+                if (w >= 100 && h >= 40) score += 20;
+            } catch (e) {}
+        } catch (e) {}
+        return score;
+    }
+
+    function scanPageForCode() {
+        if (getState() !== STATE.GET_CODE) {
+            return null;
+        }
+
+        var candidates = [];
+        var seen = {};
+
+        try {
+            var all = document.querySelectorAll('div, span, button, a, p, strong, h1, h2, h3, h4, td, th, li, label, section, article');
+            for (var i = 0; i < all.length; i++) {
+                var el = all[i];
+                if (el.closest && el.closest('#mp-root')) continue;
+                if (el.closest && el.closest('#mp-fab')) continue;
+                if (cachedBtn && el === cachedBtn) continue;
+                if (el.closest && el.closest('#avt-btn, [id*="avt" i]')) continue;
+
+                var txt = (el.textContent || '').replace(/\s+/g, '').trim();
+                if (!txt || txt.length !== 8) continue;
+                if (!/^[A-Za-z0-9]+$/.test(txt)) continue;
+                if (isBlacklistedCode(txt)) continue;
+                if (!isValidCodeShape(txt)) continue;
+
+                var key = txt + '@P1@' + i;
+                if (seen[key]) continue;
+                seen[key] = true;
+
+                var bg = getBgRGBA(el);
+                if (isBlueish(bg)) {
+                    candidates.push({ code: txt, el: el, score: 500 });
+                    log('✓ CODE NỀN XANH: ' + txt);
+                    continue;
+                }
+
+                var score = scoreCodeCandidate(el, txt);
+                if (score >= CFG.minCodeScore) {
+                    candidates.push({ code: txt, el: el, score: score });
+                }
+            }
+        } catch (e) {}
+
+        try {
+            var walker = document.createTreeWalker(document.body || document, NodeFilter.SHOW_TEXT, null, false);
+            var node; var count = 0;
+            while ((node = walker.nextNode())) {
+                count++;
+                if (count > 50000) break;
+                var t = (node.textContent || '').replace(/\s+/g, '').trim();
+                if (!t || t.length !== 8) continue;
+                if (!/^[A-Za-z0-9]+$/.test(t)) continue;
+                if (isBlacklistedCode(t)) continue;
+                if (!isValidCodeShape(t)) continue;
+
+                var par = node.parentElement;
+                if (!par) continue;
+                if (par.closest && par.closest('#mp-root')) continue;
+                if (cachedBtn && par === cachedBtn) continue;
+                if (par.closest && par.closest('#avt-btn, [id*="avt" i]')) continue;
+
+                var key2 = t + '@P2@' + count;
+                if (seen[key2]) continue;
+                seen[key2] = true;
+
+                var bg2 = getBgRGBA(par);
+                if (isBlueish(bg2)) {
+                    candidates.push({ code: t, el: par, score: 500 });
+                    log('✓ CODE NỀN XANH (parent): ' + t);
+                    continue;
+                }
+
+                var score2 = scoreCodeCandidate(par, t);
+                if (score2 >= CFG.minCodeScore) {
+                    candidates.push({ code: t, el: par, score: score2 });
+                }
+            }
+        } catch (e) {}
+
+        if (!candidates.length) {
+            log('SCAN: khong tim thay ung vien nao');
+            return null;
+        }
+
+        candidates.sort(function(a, b) { return b.score - a.score; });
+
+        log('SCAN: ' + candidates.length + ' ung vien. Top: ' + candidates[0].code + ' score=' + candidates[0].score);
+        return candidates[0].code;
+    }
+
+    function extractCodeFromBtn(btn) {
+        if (!btn) return null;
+        var t = (btn.textContent || '').replace(/\s+/g, '').trim();
+        if (t.length === 8 && /^[A-Za-z0-9]+$/.test(t)) {
+            if (!isBlacklistedCode(t) && isValidCodeShape(t)) return t;
+        }
+        try {
+            var inners = btn.querySelectorAll('text, tspan');
+            for (var i = 0; i < inners.length; i++) {
+                var tt = (inners[i].textContent || '').replace(/\s+/g, '').trim();
+                if (tt.length === 8 && /^[A-Za-z0-9]+$/.test(tt)) {
+                    if (!isBlacklistedCode(tt) && isValidCodeShape(tt)) return tt;
+                }
+            }
+        } catch (e) {}
+        return null;
+    }
+
+    function extractCode() {
+        var btn = cachedBtn;
+        if (!btn || !document.contains(btn)) btn = findGreenGButton();
+        if (btn) {
+            var c1 = extractCodeFromBtn(btn);
+            if (c1) { log('CODE P1 (btn): ' + c1); return c1; }
+        }
+        var c2 = scanPageForCode();
+        if (c2) { log('CODE P2 (scan page): ' + c2); return c2; }
+        return null;
+    }
+
+    function findGoogleResult() {
+        var fastSels = [
+            '#rso > div a[href^="http"]',
+            '#rso a[href^="http"]',
+            '#search a[href^="http"]',
+            '#center_col a[href^="http"]',
+            'h3 a[href^="http"]'
+        ];
+
+        for (var s = 0; s < fastSels.length; s++) {
+            try {
+                var fastLinks = document.querySelectorAll(fastSels[s]);
+                for (var f = 0; f < fastLinks.length; f++) {
+                    var fa = fastLinks[f];
+                    var fh = fa.href || '';
+                    if (!fh) continue;
+                    if (fh.indexOf('http://') !== 0 && fh.indexOf('https://') !== 0) continue;
+                    if (/^https?:\/\/([^\/]+\.)?(google|gstatic|googleusercontent|youtube|wikipedia|facebook|twitter|instagram|linkedin|pinterest|tiktok|accounts\.google|policies\.google|support\.google|maps\.google|translate\.google|gmail\.com)/i.test(fh)) continue;
+                    if (fh.indexOf('google.com/search') !== -1) continue;
+                    if (fh.indexOf('google.com/url') !== -1) continue;
+
+                    var rect = fa.getBoundingClientRect();
+                    if (rect.width < 10 || rect.height < 10) continue;
+
+                    log('findGoogleResult: selector match → ' + fh);
+                    return fa;
+                }
+            } catch (e) {}
+        }
+
+        var links = document.querySelectorAll('a[href^="http"]');
+        for (var i = 0; i < links.length; i++) {
+            var a = links[i];
+            var h = a.href || '';
+            if (!h) continue;
+            if (h.indexOf('http://') !== 0 && h.indexOf('https://') !== 0) continue;
+            if (/^https?:\/\/([^\/]+\.)?(google|gstatic|googleusercontent|youtube|wikipedia|facebook|twitter|instagram|linkedin|pinterest|tiktok|accounts\.google|policies\.google|support\.google|maps\.google|translate\.google|gmail\.com)/i.test(h)) continue;
+            if (h.indexOf('google.com/search') !== -1) continue;
+            if (h.indexOf('google.com/url') !== -1) continue;
+
+            var rect2 = a.getBoundingClientRect();
+            if (rect2.width < 10 || rect2.height < 10) continue;
+
+            log('findGoogleResult: fallback → ' + h);
+            return a;
+        }
+
+        return null;
+    }
+
+    function startGoogleObserver() {
+        if (!IS_TOP || !isGoogle) return;
+        if (googleObserver) return;
+        try {
+            googleObserver = new MutationObserver(function() {
+                if (stopRequested) return;
+                var st = getState();
+                if (st !== STATE.GOOGLE_SEARCH && st !== STATE.GOOGLE_CLICK) return;
+                var link = findGoogleResult();
+                if (link) {
+                    var href = link.href || '';
+                    log('✓ MUTATION: click ngay → ' + href);
+                    setState(STATE.GOOGLE_CLICK);
+                    S.set('targetUrl', href);
+                    try { link.click(); } catch (e) {}
+                    try { link.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true })); } catch (e) {}
+                }
+            });
+            googleObserver.observe(document.documentElement || document.body, { childList: true, subtree: true });
+        } catch (e) {}
+    }
+
+    function handleGoogle() {
+        if (!IS_TOP) return Promise.resolve();
+        var st = getState();
+        if (st !== STATE.GOOGLE_SEARCH && st !== STATE.GOOGLE_CLICK) return Promise.resolve();
+        var searchTerm = S.get('keyword') || S.get('domain');
+        if (!searchTerm) return Promise.resolve();
+        var tries = parseInt(S.get('googleClickTries', '0'), 10);
+        tries++;
+        S.set('googleClickTries', tries.toString());
+        var link = findGoogleResult();
+        if (link) {
+            var href = link.href || '';
+            setState(STATE.GOOGLE_CLICK);
+            S.set('targetUrl', href);
+            log('✓ CLICK TRANG DAU TIEN: ' + href);
+            try { link.click(); } catch (e) {}
+            try { link.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true })); } catch (e) {}
+            try {
+                var p = link.parentElement;
+                if (p && p.tagName === 'A') p.click();
+                var gp = link.closest('a');
+                if (gp && gp !== link) gp.click();
+            } catch (e) {}
+            return Promise.resolve();
+        }
+        if (tries >= 15) {
+            var cleanDomain = (S.get('domain', '')||'').toLowerCase().replace(/^https?:\/\//,'').replace(/^www\./,'').replace(/\/.*$/,'').trim();
+            if (cleanDomain && cleanDomain.indexOf('.') !== -1) {
+                var url = 'https://' + cleanDomain;
+                log('handleGoogle: fallback navigate → ' + url);
+                S.set('targetUrl', url);
+                setState(STATE.SCAN_BTN);
+                safeNavigate(url);
+            }
+            return Promise.resolve();
+        }
+        return Promise.resolve();
+    }
+
+    function findCodeInput() {
+        var sels = [
+            'input[placeholder="Nhập mã xác nhận"]',
+            'input[placeholder="nhập mã xác nhận"]',
+            'input[placeholder*="Nhập mã xác nhận"]',
+            'input[placeholder*="nhập mã xác nhận"]',
+            'input[placeholder*="Nhập mã"]',
+            'input[placeholder*="nhập mã"]',
+            'input[placeholder*="Mã xác nhận"]',
+            'input[placeholder*="mã xác nhận"]',
+            'input[placeholder*="xác nhận"]',
+            'input[placeholder*="Xác nhận"]',
+            'input[name="code"]', 'input#code',
+            'input[name="ma"]', 'input#ma',
+            'input[name="verify"]', 'input#verify',
+            'input[class*="code"]', 'input[class*="Code"]',
+            'input[type="text"]'
+        ];
+        for (var i = 0; i < sels.length; i++) {
+            var els = document.querySelectorAll(sels[i]);
+            for (var j = 0; j < els.length; j++) {
+                var el = els[j];
+                if (el.closest && el.closest('#mp-root')) continue;
+                if (el.type && /hidden|submit|button|checkbox|radio|file|image/i.test(el.type)) continue;
+                var rect = el.getBoundingClientRect();
+                if (rect.width < 50 || rect.height < 15) continue;
+                log('findCodeInput: FOUND ' + describeEl(el));
+                return el;
+            }
+        }
+
+        try {
+            var allInp = document.querySelectorAll('input');
+            for (var k = 0; k < allInp.length; k++) {
+                var inp = allInp[k];
+                if (inp.closest && inp.closest('#mp-root')) continue;
+                if (inp.type && /hidden|submit|button|checkbox|radio|file|image/i.test(inp.type)) continue;
+                if (inp.name && /search|q|query|email|user|pass|phone|tel/i.test(inp.name)) continue;
+                if (inp.placeholder && /search|tìm|email|user|pass|sđt|số điện thoại/i.test(inp.placeholder)) continue;
+                var rect2 = inp.getBoundingClientRect();
+                if (rect2.width < 50 || rect2.height < 15) continue;
+                log('findCodeInput (fallback): FOUND ' + describeEl(inp));
+                return inp;
+            }
+        } catch (e) {}
+
+        return null;
+    }
+
+    function findConfirmBtn() {
+        var buttons = document.querySelectorAll('button, a, div[onclick], div[role="button"], input[type="submit"]');
+        var best = null, bestScore = -1;
+        for (var i = 0; i < buttons.length; i++) {
+            var el = buttons[i];
+            if (el.closest && el.closest('#mp-root')) continue;
+            if (el.closest && el.closest('#mp-fab')) continue;
+            if (el.offsetParent === null) continue;
+            var txt = (el.textContent || el.value || '').replace(/\s+/g, ' ').trim();
+            if (!txt || txt.length < 4 || txt.length > 80) continue;
+            var sc = 0;
+            if (txt === 'NHẬP MÃ XÁC NHẬN') sc += 300;
+            else if (/^nhập mã xác nhận$/i.test(txt)) sc += 250;
+            else if (/nhập mã xác nhận/i.test(txt)) sc += 200;
+            else if (/nhap ma xac nhan/i.test(txt)) sc += 180;
+            else if (/nhập mã/i.test(txt)) sc += 100;
+            else if (/nhap ma/i.test(txt)) sc += 90;
+            else if (/xác nhận|xac nhan|submit|gửi|gui|confirm/i.test(txt)) sc += 50;
+            else continue;
+            if (el.tagName === 'BUTTON') sc += 40;
+            if (el.tagName === 'A') sc += 20;
+            try {
+                var bg = getBgRGBA(el);
+                if (bg && bg.b > 60 && bg.b > bg.r && bg.b > bg.g) sc += 30;
+            } catch (e) {}
+            if (sc > bestScore) { bestScore = sc; best = el; }
+        }
+        return best;
+    }
+
+    function findCodeInputCached() {
+        var now = Date.now();
+        if (cachedInput && document.contains(cachedInput) && now - cachedInputTime < 2000) return cachedInput;
+        var el = findCodeInput();
+        cachedInput = el; cachedInputTime = now;
+        return el;
+    }
+    function findConfirmBtnCached() {
+        var now = Date.now();
+        if (cachedConfirm && document.contains(cachedConfirm) && now - cachedConfirmTime < 2000) return cachedConfirm;
+        var el = findConfirmBtn();
+        cachedConfirm = el; cachedConfirmTime = now;
+        return el;
+    }
+
+    function getCodeFromPanel() {
+        if (UI && UI.codeVal) {
+            var t = (UI.codeVal.textContent || '').trim();
+            if (t && t !== '----') return t;
+        }
+        return '';
+    }
+
+    function getCodeFromStorage() {
+        var sc = S.get('code', '');
+        return sc ? (sc + '').trim() : '';
+    }
+
+    function forceFill(inp, code) {
+        try {
+            inp.focus();
+            try { inp.click(); } catch (e) {}
+            try {
+                var d = Object.getOwnPropertyDescriptor(inp, 'value');
+                if (d && d.set) d.set.call(inp, code);
+                else {
+                    var dP = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value');
+                    if (dP && dP.set) dP.set.call(inp, code);
+                    else inp.value = code;
+                }
+            } catch (e) { try { inp.value = code; } catch (e2) {} }
+            try { inp.dispatchEvent(new Event('input', { bubbles: true, cancelable: true })); } catch (e) {}
+            try { inp.dispatchEvent(new Event('change', { bubbles: true, cancelable: true })); } catch (e) {}
+            return inp.value === code;
+        } catch (e) { return false; }
+    }
+
+    function charByCharFill(inp, code) {
+        try {
+            inp.focus();
+            try { inp.click(); } catch (e) {}
+            try {
+                var dP = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value');
+                if (dP && dP.set) dP.set.call(inp, '');
+                else inp.value = '';
+            } catch (e) { inp.value = ''; }
+            try { inp.dispatchEvent(new Event('input', { bubbles: true })); } catch (e) {}
+
+            for (var i = 0; i < code.length; i++) {
+                var ch = code[i];
+                try { inp.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, cancelable: true, key: ch, keyCode: ch.charCodeAt(0) })); } catch (e) {}
+                try { inp.dispatchEvent(new KeyboardEvent('keypress', { bubbles: true, cancelable: true, key: ch, charCode: ch.charCodeAt(0) })); } catch (e) {}
+                try {
+                    var d = Object.getOwnPropertyDescriptor(inp, 'value');
+                    if (d && d.set) d.set.call(inp, inp.value + ch);
+                    else {
+                        var dP2 = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value');
+                        if (dP2 && dP2.set) dP2.set.call(inp, inp.value + ch);
+                        else inp.value += ch;
+                    }
+                } catch (e) { inp.value += ch; }
+                try { inp.dispatchEvent(new Event('input', { bubbles: true })); } catch (e) {}
+                try { inp.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true, cancelable: true, key: ch, keyCode: ch.charCodeAt(0) })); } catch (e) {}
+            }
+            try { inp.dispatchEvent(new Event('change', { bubbles: true })); } catch (e) {}
+            try { inp.dispatchEvent(new CompositionEvent('compositionend', { bubbles: true, data: code })); } catch (e) {}
+            return inp.value === code;
+        } catch (e) { return false; }
+    }
+
+    function pasteEventFill(inp, code) {
+        try {
+            inp.focus();
+            try { inp.select(); } catch (e) {}
+            try {
+                var dt = new DataTransfer();
+                dt.setData('text/plain', code);
+                var pe = new ClipboardEvent('paste', { bubbles: true, cancelable: true, clipboardData: dt });
+                inp.dispatchEvent(pe);
+            } catch (e) {}
+            try {
+                var d = Object.getOwnPropertyDescriptor(inp, 'value');
+                if (d && d.set) d.set.call(inp, code);
+                else inp.value = code;
+            } catch (e) { inp.value = code; }
+            try { inp.dispatchEvent(new InputEvent('input', { bubbles: true, data: code, inputType: 'insertFromPaste' })); } catch (e) {}
+            try { inp.dispatchEvent(new Event('change', { bubbles: true, cancelable: true })); } catch (e) {}
+            return inp.value === code;
+        } catch (e) { return false; }
+    }
+
+    async function nativeTypingFill(inp, code) {
+        try {
+            inp.focus();
+            try { inp.click(); } catch (e) {}
+            try { inp.select(); } catch (e) {}
+
+            try {
+                inp.setSelectionRange(0, inp.value.length);
+                document.execCommand('delete', false, null);
+            } catch (e) {
+                try {
+                    var dP = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value');
+                    if (dP && dP.set) dP.set.call(inp, '');
+                    else inp.value = '';
+                } catch (e2) { inp.value = ''; }
+            }
+            try { inp.dispatchEvent(new Event('input', { bubbles: true })); } catch (e) {}
+
+            var inserted = false;
+            try { inserted = document.execCommand('insertText', false, code); } catch (e) { inserted = false; }
+            if (inserted && inp.value === code) {
+                try { inp.dispatchEvent(new Event('change', { bubbles: true })); } catch (e) {}
+                return true;
+            }
+
+            try {
+                var dP2 = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value');
+                if (dP2 && dP2.set) dP2.set.call(inp, '');
+                else inp.value = '';
+            } catch (e) { inp.value = ''; }
+            try { inp.dispatchEvent(new Event('input', { bubbles: true })); } catch (e) {}
+
+            for (var i = 0; i < code.length; i++) {
+                var ch = code[i];
+                try { inp.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, cancelable: true, key: ch, code: 'Key' + ch.toUpperCase(), keyCode: ch.charCodeAt(0), which: ch.charCodeAt(0) })); } catch (e) {}
+                try { inp.dispatchEvent(new InputEvent('beforeinput', { bubbles: true, cancelable: true, inputType: 'insertText', data: ch })); } catch (e) {}
+                var ok = false;
+                try { ok = document.execCommand('insertText', false, ch); } catch (e) { ok = false; }
+                if (!ok) {
+                    try {
+                        var d = Object.getOwnPropertyDescriptor(inp, 'value');
+                        var nv = (inp.value || '') + ch;
+                        if (d && d.set) d.set.call(inp, nv);
+                        else {
+                            var dP3 = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value');
+                            if (dP3 && dP3.set) dP3.set.call(inp, nv);
+                            else inp.value = nv;
+                        }
+                    } catch (e) { inp.value = (inp.value || '') + ch; }
+                }
+                try { inp.dispatchEvent(new InputEvent('input', { bubbles: true, cancelable: true, inputType: 'insertText', data: ch })); } catch (e) {}
+                try { inp.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true, cancelable: true, key: ch, code: 'Key' + ch.toUpperCase(), keyCode: ch.charCodeAt(0), which: ch.charCodeAt(0) })); } catch (e) {}
+                await sleep(rand(CFG.nativePasteDelayMin, CFG.nativePasteDelayMax));
+            }
+
+            try { inp.dispatchEvent(new Event('change', { bubbles: true })); } catch (e) {}
+            try { inp.dispatchEvent(new CompositionEvent('compositionend', { bubbles: true, data: code })); } catch (e) {}
+            return inp.value === code;
+        } catch (e) { return false; }
+    }
+
+    function fillLoop(code, callback) {
+        var attempts = 0;
+
+        function nextAttempt() {
+            if (stopRequested || fillDone || S.get('confirmed') === '1' || S.get('hardStop') === '1') {
+                if (callback) callback(false);
+                return;
+            }
+
+            var inp = findCodeInputCached();
+            if (!inp) {
+                attempts++;
+                if (attempts % 20 === 0) log('fillLoop: chua tim thay input (lan ' + attempts + ')');
+                if (attempts < CFG.fillLoopMax) setTimeout(nextAttempt, CFG.fillLoopDelay);
+                else { if (callback) callback(false); }
+                return;
+            }
+
+            attempts++;
+
+            var tier = (attempts % 4);
+            if (tier === 1) {
+                forceFill(inp, code);
+            } else if (tier === 2) {
+                charByCharFill(inp, code);
+            } else if (tier === 3) {
+                pasteEventFill(inp, code);
+            } else {
+                nativeTypingFill(inp, code).then(function() {
+                    verifyHold(code, callback, attempts);
+                });
+                return;
+            }
+
+            setTimeout(function() {
+                verifyHold(code, callback, attempts);
+            }, 80);
+        }
+
+        function verifyHold(code, callback, attemptNum) {
+            if (stopRequested || fillDone || S.get('confirmed') === '1' || S.get('hardStop') === '1') {
+                if (callback) callback(false);
+                return;
+            }
+            var startAt = Date.now();
+            var lastValue = '';
+            var stableCount = 0;
+
+            function checkTick() {
+                if (stopRequested || fillDone || S.get('confirmed') === '1' || S.get('hardStop') === '1') {
+                    if (callback) callback(false); return;
+                }
+                var inp = findCodeInputCached();
+                if (!inp) {
+                    if (attemptNum < CFG.fillLoopMax) setTimeout(nextAttempt, CFG.fillLoopDelay);
+                    else callback(false);
+                    return;
+                }
+                var cur = (inp.value || '').trim();
+
+                if (cur === code) {
+                    stableCount++;
+                    lastValue = cur;
+                    if (Date.now() - startAt >= CFG.fillHoldVerifyMs) {
+                        if (callback) callback(true);
+                        return;
+                    }
+                    setTimeout(checkTick, CFG.fillVerifyIntervalMs);
+                } else {
+                    if (attemptNum < CFG.fillLoopMax) {
+                        setTimeout(nextAttempt, 100);
+                    } else {
+                        if (lastValue === code) {
+                            callback(true);
+                        } else {
+                            callback(false);
+                        }
+                    }
+                }
+            }
+            checkTick();
+        }
+
+        nextAttempt();
+    }
+
+    function clickConfirmNow() {
+        var bt = findConfirmBtnCached();
+        if (!bt) return false;
+        try {
+            bt.scrollIntoView({ block: 'center' });
+            try { bt.click(); } catch (e) {}
+            try { bt.dispatchEvent(new Event('click', { bubbles: true, cancelable: true })); } catch (e) {}
+            try { bt.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true })); } catch (e) {}
+            try { bt.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true })); } catch (e) {}
+            try { bt.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true })); } catch (e) {}
+            try {
+                var r = bt.getBoundingClientRect();
+                var cx = r.left + r.width / 2, cy = r.top + r.height / 2;
+                var top = document.elementFromPoint(cx, cy);
+                if (top && top !== bt && !top.closest('#mp-root')) top.click();
+            } catch (e) {}
+            return true;
+        } catch (e) { return false; }
+    }
+
+    function checkSubmitResult() {
+        try {
+            var bodyTxt = ((document.body && document.body.innerText) || '').toLowerCase();
+
+            var curUrl = location.href.toLowerCase();
+            var gtUrl = (S.get('gtrafficUrl') || '').toLowerCase();
+            if (gtUrl && curUrl !== gtUrl) {
+                if (curUrl.indexOf('success') !== -1 || curUrl.indexOf('thank') !== -1 || curUrl.indexOf('done') !== -1 || curUrl.indexOf('complete') !== -1) {
+                    return 'success';
+                }
+            }
+
+            var inp = findCodeInputCached();
+            if (!inp) {
+                return 'success';
+            }
+
+            var successKeywords = [
+                'thành công', 'thanh cong', 'hoàn tất', 'hoan tat',
+                'đã xác nhận', 'da xac nhan', 'success', 'completed',
+                'chúc mừng', 'chuc mung', 'đã nộp', 'da nop',
+                'cảm ơn', 'cam on', 'ghi nhận', 'ghi nhan'
+            ];
+            for (var j = 0; j < successKeywords.length; j++) {
+                if (bodyTxt.indexOf(successKeywords[j]) !== -1) return 'success';
+            }
+
+            var errorKeywords = [
+                'mã không đúng', 'ma khong dung', 'mã sai', 'ma sai',
+                'mã hết hạn', 'ma het han', 'vui lòng nhập', 'vui long nhap',
+                'không hợp lệ', 'khong hop le', 'invalid',
+                'sai mã', 'sai ma', 'chưa nhập', 'chua nhap',
+                'không đúng', 'khong dung'
+            ];
+            for (var i = 0; i < errorKeywords.length; i++) {
+                if (bodyTxt.indexOf(errorKeywords[i]) !== -1) return 'error';
+            }
+
+            var curVal = (inp.value || '').trim();
+            if (curVal && curVal === S.get('code', '')) {
+                return 'pending';
+            }
+
+            return 'unknown';
+        } catch (e) { return 'unknown'; }
+    }
+
+    // ============================================================
+    // v46.3.4: FIND GET LINK BUTTON
+    // ============================================================
+    function findGetLinkButton() {
+        var all = document.querySelectorAll('button, a, div[role="button"], div[onclick], input[type="button"], input[type="submit"], span');
+        for (var i = 0; i < all.length; i++) {
+            var el = all[i];
+            if (el.closest && el.closest('#mp-root')) continue;
+            if (el.closest && el.closest('#mp-fab')) continue;
+            if (el.offsetParent === null && el.tagName !== 'A') continue;
+
+            var txt = (el.textContent || el.value || '').replace(/\s+/g, ' ').trim();
+            if (!txt) continue;
+            var lc = txt.toLowerCase();
+
+            if (lc === 'lấy link' || lc === 'lay link' || lc === 'laylink' ||
+                lc === 'lấy link miễn phí' || lc === 'lấy link ngay' ||
+                lc === 'lấy link free' || lc === 'nhận link' || lc === 'nhan link') {
+                var r = el.getBoundingClientRect();
+                if (r.width >= 40 && r.height >= 15) return el;
+            }
+        }
+
+        for (var j = 0; j < all.length; j++) {
+            var el2 = all[j];
+            if (el2.closest && el2.closest('#mp-root')) continue;
+            if (el2.closest && el2.closest('#mp-fab')) continue;
+            if (el2.offsetParent === null && el2.tagName !== 'A') continue;
+
+            var txt2 = (el2.textContent || el2.value || '').replace(/\s+/g, ' ').trim();
+            if (!txt2 || txt2.length > 30) continue;
+            var lc2 = txt2.toLowerCase();
+
+            if (lc2.indexOf('lấy link') !== -1 || lc2.indexOf('lay link') !== -1) {
+                var r2 = el2.getBoundingClientRect();
+                if (r2.width >= 40 && r2.height >= 15) return el2;
+            }
+        }
+
+        for (var k = 0; k < all.length; k++) {
+            var el3 = all[k];
+            if (el3.closest && el3.closest('#mp-root')) continue;
+            if (el3.closest && el3.closest('#mp-fab')) continue;
+            if (el3.offsetParent === null && el3.tagName !== 'A') continue;
+
+            var id3 = (el3.id || '').toLowerCase();
+            var cls3 = (el3.className || '').toString().toLowerCase();
+            if (id3.indexOf('get-link') !== -1 || id3.indexOf('getlink') !== -1 || id3.indexOf('lay-link') !== -1 || id3.indexOf('laylink') !== -1 ||
+                cls3.indexOf('get-link') !== -1 || cls3.indexOf('getlink') !== -1 || cls3.indexOf('lay-link') !== -1 || cls3.indexOf('laylink') !== -1) {
+                var r3 = el3.getBoundingClientRect();
+                if (r3.width >= 40 && r3.height >= 15) return el3;
+            }
+        }
+
+        return null;
+    }
+
+    // ============================================================
+    // v46.3.4: CLICK GET LINK — TUC THI
+    // ============================================================
+    function clickGetLinkButton(btn) {
+        if (!btn) return false;
+        var sig = describeEl(btn);
+        try { btn.scrollIntoView({ behavior: 'instant', block: 'center' }); } catch (e) {}
+
+        try { btn.click(); } catch (e) {}
+        try { btn.dispatchEvent(new Event('click', { bubbles: true, cancelable: true })); } catch (e) {}
+        try { btn.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true })); } catch (e) {}
+        try { btn.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true })); } catch (e) {}
+        try { btn.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true })); } catch (e) {}
+        try { btn.dispatchEvent(new TouchEvent('touchstart', { bubbles: true, cancelable: true })); } catch (e) {}
+        try { btn.dispatchEvent(new TouchEvent('touchend', { bubbles: true, cancelable: true })); } catch (e) {}
+
+        try {
+            var r = btn.getBoundingClientRect();
+            var cx = r.left + r.width / 2, cy = r.top + r.height / 2;
+            var top = document.elementFromPoint(cx, cy);
+            if (top && top !== btn && !top.closest('#mp-root')) {
+                try { top.click(); } catch (e) {}
+                try { top.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true })); } catch (e) {}
+            }
+        } catch (e) {}
+
+        log('✓✓✓ CLICK NÚT LẤY LINK: ' + sig);
+        return true;
+    }
+
+    // ============================================================
+    // v46.3.4: START WAITING — QUET TU 0s, CLICK NGAY KHI THAY
+    // ============================================================
+    function startWaitingForGetLink() {
+        S.set('waitingGetLink', '1');
+        getLinkStartAt = Date.now();
+        S.set('getLinkStartAt', getLinkStartAt.toString());
+        getLinkClickDone = false;
+
+        var minWaitMs = CFG.minWaitBeforeSearchMs;
+        var searchStartAt = Date.now() + minWaitMs;
+        log('★ BẮT ĐẦU QUÉT NÚT LẤY LINK (bắt đầu sau ' + minWaitMs + 'ms, timeout ' + (CFG.getLinkTimeoutMs/1000) + 's)');
+        if (IS_TOP) showGuide('<b>★ ĐÃ NỘP MÃ ★</b><br>Đang chờ nút LẤY LINK xuất hiện...');
+
+        if (getLinkPollTimer) { try { clearInterval(getLinkPollTimer); } catch (e) {} getLinkPollTimer = null; }
+        if (getLinkObserver) { try { getLinkObserver.disconnect(); } catch (e) {} getLinkObserver = null; }
+
+        function tryClickIfReady(source) {
+            if (getLinkClickDone) return false;
+            if (Date.now() < searchStartAt) return false;
+            var btn = findGetLinkButton();
+            if (!btn) return false;
+            getLinkClickDone = true;
+            var elapsed = Date.now() - getLinkStartAt;
+            log('★ ' + source + ': ĐÃ CLICK NÚT LẤY LINK (sau ' + elapsed + 'ms) - STOP NGAY');
+            if (IS_TOP) showGuide('<b>★ ĐÃ CLICK NÚT LẤY LINK ★</b><br>Hoàn tất!');
+            clickGetLinkButton(btn);
+            S.set('getLinkClicked', '1');
+            if (getLinkObserver) { try { getLinkObserver.disconnect(); } catch (e) {} getLinkObserver = null; }
+            if (getLinkPollTimer) { try { clearInterval(getLinkPollTimer); } catch (e) {} getLinkPollTimer = null; }
+            S.del('waitingGetLink');
+            stopAll();
+            return true;
+        }
+
+        // Lớp 1: MutationObserver - bắt NGAY khi DOM đổi
+        try {
+            getLinkObserver = new MutationObserver(function() {
+                tryClickIfReady('MUTATION');
+            });
+            getLinkObserver.observe(document.body || document.documentElement, { childList: true, subtree: true });
+        } catch (e) {}
+
+        // Lớp 2: Poll cực nhanh - 5ms
+        getLinkPollTimer = setInterval(function() {
+            if (getLinkClickDone) {
+                clearInterval(getLinkPollTimer); getLinkPollTimer = null;
+                return;
+            }
+            var now = Date.now();
+            if (now - getLinkStartAt > CFG.getLinkTimeoutMs) {
+                log('⚠ Hết ' + (CFG.getLinkTimeoutMs/1000) + 's không thấy nút LẤY LINK');
+                getLinkClickDone = true;
+                clearInterval(getLinkPollTimer); getLinkPollTimer = null;
+                if (getLinkObserver) { try { getLinkObserver.disconnect(); } catch (e) {} getLinkObserver = null; }
+                S.del('waitingGetLink');
+                stopAll();
+                return;
+            }
+            tryClickIfReady('POLL');
+        }, CFG.getLinkPollMs);
+    }
+
+    function finishSuccess(reason) {
+        log('★★★ NỘP THÀNH CÔNG (' + reason + ') → BẮT ĐẦU QUÉT NÚT LẤY LINK ★★★');
+        S.set('confirmed', '1');
+        S.set('hardStop', '1');
+        fillDone = true;
+        setState(STATE.DONE);
+        S.del('navigatingBack');
+        S.del('lastNavUrl');
+        S.del('lastNavAt');
+        fillRunning = false;
+        if (gtrafficCheckTimer) { clearInterval(gtrafficCheckTimer); gtrafficCheckTimer = null; }
+        startWaitingForGetLink();
+    }
+
+    function fillAndConfirm(force) {
+        if (!IS_TOP || !isGtraffic) return false;
+        if (S.get('hardStop') === '1') { return false; }
+        if (fillDone && !force) return true;
+        if (fillRunning) return true;
+        fillRunning = true;
+
+        var code = getCodeFromPanel();
+        if (!code || !isValidCodeShape(code) || isBlacklistedCode(code)) {
+            var sc = getCodeFromStorage();
+            if (sc && isValidCodeShape(sc) && !isBlacklistedCode(sc)) {
+                code = sc;
+            }
+        }
+
+        if (!code || !isValidCodeShape(code) || isBlacklistedCode(code)) {
+            fillRetries++;
+            fillRunning = false;
+            if (fillRetries < CFG.fillRetryMax) {
+                setTimeout(function() { fillAndConfirm(force); }, CFG.fillRetryDelay);
+            }
+            return false;
+        }
+
+        S.set('filled', '1');
+        S.set('code', code);
+
+        if (!codeShown && UI) {
+            codeShown = true;
+            UI.code.classList.add('show');
+            UI.codeVal.textContent = code;
+            showGuide('<b>★ ĐANG DÁN MÃ ★</b><br>Mã: <b>' + code + '</b>');
+        }
+
+        fillLoop(code, function(success) {
+            if (stopRequested) { fillRunning = false; return; }
+            if (S.get('hardStop') === '1') { fillRunning = false; return; }
+
+            if (success) {
+                showGuide('<b>★ ĐÃ DÁN MÃ ★</b><br>Đang nộp...');
+                setTimeout(function() {
+                    if (stopRequested) { fillRunning = false; return; }
+                    if (S.get('hardStop') === '1') { fillRunning = false; return; }
+
+                    clickConfirmNow();
+
+                    var checkCount = 0;
+                    var maxChecks = CFG.postSubmitCheckMax;
+
+                    function checkLoop() {
+                        if (S.get('hardStop') === '1') { fillRunning = false; return; }
+                        checkCount++;
+                        var result = checkSubmitResult();
+
+                        if (result === 'success') {
+                            finishSuccess('success');
+                            return;
+                        }
+
+                        if (result === 'error') {
+                            S.set('confirmed', '0');
+                            fillDone = false;
+                            fillRunning = false;
+                            var inp = findCodeInputCached();
+                            if (inp) {
+                                try {
+                                    var dP = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value');
+                                    if (dP && dP.set) dP.set.call(inp, '');
+                                    else inp.value = '';
+                                } catch (e) { inp.value = ''; }
+                                try { inp.dispatchEvent(new Event('input', { bubbles: true })); } catch (e) {}
+                            }
+                            setTimeout(function() { fillAndConfirm(true); }, 800);
+                            return;
+                        }
+
+                        if (result === 'pending') {
+                            if (checkCount < maxChecks) {
+                                setTimeout(checkLoop, CFG.postSubmitCheckMs);
+                            } else {
+                                finishSuccess('pending-timeout');
+                            }
+                            return;
+                        }
+
+                        if (checkCount < maxChecks) {
+                            setTimeout(checkLoop, CFG.postSubmitCheckMs);
+                        } else {
+                            finishSuccess('unknown-timeout');
+                        }
+                    }
+                    setTimeout(checkLoop, CFG.postSubmitCheckMs);
+                }, 100);
+            } else {
+                clickConfirmNow();
+                S.set('confirmed', '1');
+                S.set('hardStop', '1');
+                fillDone = true;
+                setState(STATE.DONE);
+                fillRunning = false;
+                if (gtrafficCheckTimer) { clearInterval(gtrafficCheckTimer); gtrafficCheckTimer = null; }
+                startWaitingForGetLink();
+            }
+        });
+
+        return true;
+    }
+
+    function handleGtraffic() {
+        if (!IS_TOP || !isGtraffic) return Promise.resolve();
+        if (S.get('waitingGetLink') === '1') {
+            return Promise.resolve();
+        }
+        if (S.get('getLinkClicked') !== '1') {
+            var btn = findGetLinkButton();
+            if (btn) {
+                log('✓ CLICK NÚT "LẤY LINK" (boot path): ' + describeEl(btn));
+                S.set('getLinkClicked', '1');
+                clickGetLinkButton(btn);
+            }
+        }
+        return Promise.resolve();
+    }
+
+    function goBackToGtraffic() {
+        if (S.get('backDone') === '1') { return; }
+        var gt = S.get('gtrafficUrl');
+        if (!gt) return;
+        S.set('backDone', '1');
+        S.set('navigatingBack', '1');
+        safeNavigate(gt);
+    }
+
+    function handleTarget() {
+        if (isGtraffic || isGoogle) return Promise.resolve();
+        var st = getState();
+        if ((st === STATE.GOOGLE_SEARCH || st === STATE.GOOGLE_CLICK) && isRealTargetPage()) {
+            setState(STATE.SCAN_BTN); return Promise.resolve();
+        }
+        if (st === STATE.SCAN_BTN) {
+            var b = findGreenGButton();
+            if (b) {
+                var lc = parseInt(S.get('lastClickTime','0'), 10);
+                if (Date.now() - lc > 3500) {
+                    S.set('lastClickTime', Date.now().toString());
+                    S.set('btnClickAt', Date.now().toString());
+                    clickBtn(b);
+                    setTimeout(function() {
+                        if (getState() === STATE.SCAN_BTN) setState(STATE.WAIT_COUNTDOWN);
+                    }, 2000);
+                }
+            }
+            return Promise.resolve();
+        }
+        if (st === STATE.WAIT_COUNTDOWN) {
+            var cd = readCountdown();
+            if (cd) {
+                var tot = parseInt(S.get('serverTotalSec','0'), 10);
+                if (cd.sec > tot) { tot = cd.sec; S.set('serverTotalSec', tot.toString()); }
+                if (tot === 0) tot = cd.sec || CFG.defaultCountdown;
+                if (IS_TOP) showTimer(cd.sec, tot, 'B5: CHỜ ' + cd.sec + 's');
+                S.set('lastServerSec', cd.sec.toString());
+
+                if (cd.sec === 0) {
+                    log('B5: countdown thực sự = 0 (src=' + cd.src + '), chuyen get-code');
+                    setState(STATE.GET_CODE);
+                    return Promise.resolve();
+                }
+                return Promise.resolve();
+            }
+            var b2 = cachedBtn || findGreenGButton();
+            if (b2) {
+                var bt2 = (b2.textContent || '').replace(/\s+/g, '').trim();
+                if (bt2.length === 8 && /^[A-Za-z0-9]+$/.test(bt2) && !isBlacklistedCode(bt2) && isValidCodeShape(bt2)) {
+                    log('B5: nut co code thật: ' + bt2);
+                    setState(STATE.GET_CODE);
+                    return Promise.resolve();
+                }
+            }
+            var clickAt = parseInt(S.get('btnClickAt', '0'), 10);
+            if (clickAt > 0 && IS_TOP) {
+                var elapsed = Math.floor((Date.now() - clickAt) / 1000);
+                var remain = Math.max(0, CFG.defaultCountdown - elapsed);
+                showTimer(remain, CFG.defaultCountdown, 'B5: CHỜ ' + remain + 's');
+                if (remain === 0) {
+                    log('B5: countdown het, chuyen get-code');
+                    setState(STATE.GET_CODE);
+                    return Promise.resolve();
+                }
+            }
+            return Promise.resolve();
+        }
+        if (st === STATE.GET_CODE) {
+            var attempts = parseInt(S.get('codeAttempts', '0'), 10);
+            attempts++;
+            S.set('codeAttempts', attempts.toString());
+            var code = extractCode();
+            if (code) {
+                S.set('code', code);
+                S.set('codeFoundAt', Date.now().toString());
+                if (IS_TOP) showCode(code);
+                setState(STATE.BACK_GTRAFFIC);
+                setTimeout(goBackToGtraffic, CFG.backDelay);
+                return Promise.resolve();
+            }
+            if (attempts % 10 === 0) log('Dang cho code... (lan ' + attempts + ')');
+            return Promise.resolve();
+        }
+        if (st === STATE.BACK_GTRAFFIC) {
+            if (S.get('navigatingBack') === '1') return Promise.resolve();
+            goBackToGtraffic();
+            return Promise.resolve();
+        }
+        return Promise.resolve();
+    }
+
+    function loop() {
+        if (loopRunning) return;
+        if (stopRequested) return;
+        loopRunning = true;
+        var i = 0;
+        var tick = function() {
+            if (stopRequested) { loopRunning = false; return; }
+            if (S.get('waitingGetLink') === '1') {
+                loopTimer = setTimeout(tick, 5);
+                return;
+            }
+            if (S.get('hardStop') === '1') { loopRunning = false; return; }
+            i++;
+            if (i >= 999999) { loopRunning = false; return; }
+            if (!shouldToolRunOnThisPage()) {
+                resetAllState();
+                loopRunning = false;
+                return;
+            }
+            try { watchdog(); } catch (e) {}
+            var p;
+            var nextDelay = CFG.poll;
+            if (isGoogle && IS_TOP) { p = handleGoogle(); nextDelay = CFG.googlePoll; }
+            else if (isGtraffic && IS_TOP) { p = handleGtraffic(); nextDelay = CFG.poll; }
+            else { p = handleTarget(); nextDelay = CFG.targetPoll; }
+            p.catch(function(e){ log('Loi: ' + e.message); }).then(function() {
+                if (getState() === STATE.DONE && IS_TOP && S.get('waitingGetLink') !== '1') { loopRunning = false; return; }
+                if (S.get('hardStop') === '1' && S.get('waitingGetLink') !== '1') { loopRunning = false; return; }
+                loopTimer = setTimeout(tick, nextDelay);
+            });
+        };
+        tick();
+    }
+
+    function startGtrafficObserver() {
+        if (!IS_TOP || !isGtraffic) return;
+        if (gtrafficCheckTimer) return;
+        gtrafficCheckTimer = setInterval(function() {
+            if (S.get('waitingGetLink') === '1') {
+                clearInterval(gtrafficCheckTimer); gtrafficCheckTimer = null;
+                return;
+            }
+            if (S.get('hardStop') === '1') {
+                clearInterval(gtrafficCheckTimer); gtrafficCheckTimer = null;
+                return;
+            }
+            if (stopRequested || fillDone || S.get('confirmed') === '1') {
+                clearInterval(gtrafficCheckTimer); gtrafficCheckTimer = null;
+                return;
+            }
+            if (getState() === STATE.DONE) {
+                clearInterval(gtrafficCheckTimer); gtrafficCheckTimer = null;
+                return;
+            }
+
+            var code = getCodeFromPanel() || getCodeFromStorage();
+            if (!code || !isValidCodeShape(code) || isBlacklistedCode(code)) return;
+
+            var inp = findCodeInputCached();
+            if (!inp) {
+                return;
+            }
+            var curVal = (inp.value || '').trim();
+            if (curVal === '' && !fillRunning && !fillDone) {
+                fillAndConfirm(true);
+            }
+        }, 500);
+    }
+
+    function boot() {
+        if (!shouldToolRunOnThisPage()) {
+            var old = document.getElementById('mp-root'); if (old) old.remove();
+            var fab = document.getElementById('mp-fab'); if (fab) fab.remove();
+            return;
+        }
+        var leavingAt = parseInt(S.get('leavingAt', '0'), 10);
+        if (leavingAt > 0) {
+            var elapsed = Date.now() - leavingAt;
+            if (elapsed > 300000) {
+                resetAllState(true);
+            }
+            S.del('leavingAt');
+        }
+        if (IS_TOP) buildPanel();
+        var st = getState();
+        var code = S.get('code', '');
+        if (isRealTargetPage() && (st === STATE.GOOGLE_SEARCH || st === STATE.GOOGLE_CLICK)) {
+            setState(STATE.SCAN_BTN);
+        }
+        if (isGoogle && IS_TOP) {
+            startGoogleObserver();
+        }
+        if (isGtraffic && code) {
+            if (st === STATE.BACK_GTRAFFIC) {
+                S.del('navigatingBack');
+                S.set('backDone', '1');
+            }
+            if (S.get('waitingGetLink') === '1') {
+                log('BOOT: dang cho nut LAY LINK tu lan truoc → tiep tuc cho');
+                if (IS_TOP) refreshStatus();
+                if (IS_TOP && !codeShown) {
+                    codeShown = true;
+                    UI.code.classList.add('show');
+                    UI.codeVal.textContent = code;
+                }
+                startWaitingForGetLink();
+                startLeaveDetector();
+                return;
+            }
+            if (S.get('confirmed') !== '1' && S.get('hardStop') !== '1') {
+                resetFillFlags();
+                S.del('filled');
+                if (st !== STATE.FILL_CODE) setState(STATE.FILL_CODE);
+                setTimeout(function() { fillAndConfirm(true); }, 800);
+                startGtrafficObserver();
+            } else {
+                log('BOOT: da confirmed - cho nut LAY LINK');
+            }
+            if (IS_TOP) refreshStatus();
+            if (IS_TOP && !codeShown) {
+                codeShown = true;
+                UI.code.classList.add('show');
+                UI.codeVal.textContent = code;
+            }
+            startLeaveDetector();
+            if (S.get('confirmed') !== '1' && S.get('hardStop') !== '1') {
+                loop();
+            }
+            return;
+        }
+        if (IS_TOP) refreshStatus();
+        if (IS_TOP && code && !codeShown) {
+            codeShown = true;
+            UI.code.classList.add('show');
+            UI.codeVal.textContent = code;
+        }
+        if (st === STATE.DONE && S.get('waitingGetLink') !== '1') { stopAll(); startLeaveDetector(); return; }
+        if (st && st !== STATE.IDLE) loop();
+        startLeaveDetector();
+    }
+
+    if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot);
+    else boot();
+})();
